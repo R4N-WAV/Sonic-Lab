@@ -115,11 +115,14 @@ TransferAnalyzer::Result TransferAnalyzer::result() const
     r.coherence.resize (bins);
     r.usable.resize (bins);
     double cohSum = 0.0;
-    int cohCount = 0;
+    int cohCount = 0, bandBins = 0;
     for (size_t k = 0; k < bins; ++k)
     {
         const bool ok = sxx[k] > thresh && syy[k] > 0.0;
         r.usable[k] = ok;
+        const double fk = k * r.binHz;
+        if (fk >= 20.0 && fk <= 20000.0)
+            ++bandBins;
         if (! ok)
         {
             r.magnitudeDb[k] = -200.0;
@@ -143,6 +146,8 @@ TransferAnalyzer::Result TransferAnalyzer::result() const
         }
     }
     r.meanCoherence = cohCount > 0 ? cohSum / cohCount : 0.0;
+    r.usableFraction = bandBins > 0 ? (double) cohCount / bandBins : 0.0;
+    r.broadband = r.usableFraction >= 0.5;
     r.valid = cohCount > 0;
     return r;
 }

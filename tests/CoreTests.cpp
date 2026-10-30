@@ -303,6 +303,7 @@ void testTransfer()
         check (std::fabs (res.magnitudeDb[(size_t) k] - pred) < 0.3,
                fmt ("%.0f Hz: estimated %.2f dB vs true %.2f dB", f, res.magnitudeDb[(size_t) k], pred));
     }
+    check (res.broadband, fmt ("pink noise counts as broadband excitation (%.0f %% of bins usable)", res.usableFraction * 100.0));
     check (res.meanCoherence > 0.97, fmt ("linear device: mean coherence %.3f > 0.97", res.meanCoherence));
 
     // A heavily driven tube is not linear -> coherence must drop
@@ -320,6 +321,17 @@ void testTransfer()
     ta2.prepare (kFs, 4096, 0.0);
     ta2.addBlock (x.data() + 4096, tl.data() + 4096, (int) x.size() - 4096);
     auto res2 = ta2.result();
+    {
+        SignalGenerator gs;
+        gs.prepare (kFs);
+        gs.frequencyHz = 1000.0f;
+        std::vector<float> sx, sr;
+        renderGen (gs, sx, sr, 48000);
+        TransferAnalyzer ta3;
+        ta3.prepare (kFs, 4096, 0.0);
+        ta3.addBlock (sx.data(), sx.data(), (int) sx.size());
+        check (! ta3.result().broadband, fmt ("single sine flagged as narrowband (%.1f %% of bins usable)", ta3.result().usableFraction * 100.0));
+    }
     check (res2.meanCoherence < res.meanCoherence - 0.1, fmt ("nonlinear device: coherence drops to %.3f", res2.meanCoherence));
     check (res2.estimatedDelaySamples == t.latencySamples(), fmt ("tube latency found by cross-correlation: %.0f samples", res2.estimatedDelaySamples));
 }

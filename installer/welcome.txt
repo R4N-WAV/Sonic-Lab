@@ -1,0 +1,18 @@
+ATELIER by R4N
+Understand sound. Shape character.
+
+ATELIER is a VST3 audio effect for sound design, analog modelling,
+measurement and DSP development. It runs inside your DAW
+(tested targets: FL Studio, Cubase, Reaper).
+
+What gets installed
+  - ATELIER.vst3 into your VST3 folder
+    (default: C:\Program Files\Common Files\VST3)
+  - Setup notes and DAW routing guide into
+    C:\Program Files\R4N\ATELIER
+  - An uninstaller (Windows Settings > Apps > ATELIER by R4N)
+
+Nothing is installed into DAW program folders, and ATELIER needs no
+internet connection or account.
+
+Close your DAW before continuing.

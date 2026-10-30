@@ -43,6 +43,8 @@ public:
         std::vector<bool> usable;          // enough input energy in this bin
         int estimatedDelaySamples = 0;     // y lags x by this many samples (estimate)
         double meanCoherence = 0.0;        // over usable bins 20 Hz..20 kHz
+        double usableFraction = 0.0;       // share of 20 Hz..20 kHz bins with enough excitation
+        bool broadband = false;            // usableFraction >= 0.5: delay estimate and full curve meaningful
         int segmentsAveraged = 0;
     };
 
