@@ -25,7 +25,7 @@ CompressorModule::CompressorModule()
         ParamSpec::num ("attack_ms", "Attack", "ms", 0.02f, 300, 10, 10,
             "How fast gain reduction engages.", false, "Timing"),
         ParamSpec::num ("release_ms", "Release", "ms", 5, 5000, 200, 200,
-            "How fast gain recovers. Opto: the slow part of its two-stage release.", false, "Timing"),
+            "How fast gain recovers. Opto: sets the slow second stage; the first stage is always about 60 ms.", false, "Timing"),
         ParamSpec::toggle ("auto_release", "Auto release", false,
             "Programme-dependent release: fast after transients, slow after sustained compression.", false, "Timing"),
         ParamSpec::num ("knee_db", "Knee", "dB", 0, 24, 6, 0,
@@ -122,7 +122,7 @@ void CompressorModule::reset()
     for (auto& c : ch)
     {
         c.hpf.reset();
-        c.ms = c.gr = c.grSlow = c.memory = c.prevOut = 0.0;
+        c.ms = c.gr = c.grSlow = c.grFast = c.memory = c.prevOut = 0.0;
         c.dc.reset();
     }
     grMeter = 0.0f;
@@ -141,6 +141,7 @@ void CompressorModule::process (float* const* io, int numCh, int n)
     const double aSlow = coeff (fs, relMs * 4.0);
     const double aRms = coeff (fs, 10.0);
     const double aMem = coeff (fs, 2000.0);
+    const double aMemOpto = coeff (fs, std::max (3000.0, relMs * 3.0)); // opto memory fades slower than its release
     const bool autoRel = getParam (pAutoRel) > 0.5f;
     const bool rms = getParam (pDet) > 0.5f;
     const double link = getParam (pLink) * 0.01;
@@ -190,26 +191,35 @@ void CompressorModule::process (float* const* io, int numCh, int n)
             Chan& st = ch[(size_t) c];
             const double target = computerDb (lvl[c], m, ratio);
 
-            // programme memory: rises while compressing (> 1 dB), decays over ~2 s
+            // programme memory: rises while compressing (> 1 dB), decays slowly afterwards
             const double busy = target < -1.0 ? 1.0 : 0.0;
-            st.memory = flushDenormal (busy + aMem * (st.memory - busy));
+            st.memory = flushDenormal (busy + (m == Model::opto && busy < 0.5 ? aMemOpto : aMem) * (st.memory - busy));
 
-            double relCoeff = aRel;
             if (m == Model::opto)
             {
+                // Two-stage optical release: part of the gain reduction recovers in ~60 ms, the
+                // rest at the Release setting. The longer/harder the compression (memory), the
+                // larger the slow share - like a light-dependent resistor that "remembers".
                 const double w = std::clamp (0.25 + 0.75 * st.memory * prog, 0.0, 1.0);
-                relCoeff = aFast + w * (aRel - aFast);
+                st.grFast = target + (target < st.grFast ? aAtt : aFast) * (st.grFast - target);
+                st.grSlow = target + (target < st.grSlow ? aAtt : aRel) * (st.grSlow - target);
+                st.grFast = flushDenormal (st.grFast);
+                st.grSlow = flushDenormal (st.grSlow);
+                st.gr = (1.0 - w) * st.grFast + w * st.grSlow;
             }
-            else if (autoRel)
-            {
-                const double w = std::clamp (st.memory * (0.3 + 0.7 * prog), 0.0, 1.0);
-                relCoeff = aFast + w * (aSlow - aFast);
-            }
-
-            if (target < st.gr)
-                st.gr = target + aAtt * (st.gr - target);
             else
-                st.gr = target + relCoeff * (st.gr - target);
+            {
+                double relCoeff = aRel;
+                if (autoRel)
+                {
+                    const double w = std::clamp (st.memory * (0.3 + 0.7 * prog), 0.0, 1.0);
+                    relCoeff = aFast + w * (aSlow - aFast);
+                }
+                if (target < st.gr)
+                    st.gr = target + aAtt * (st.gr - target);
+                else
+                    st.gr = target + relCoeff * (st.gr - target);
+            }
             st.gr = flushDenormal (st.gr);
 
             const double G = dbToGain (st.gr);
@@ -235,6 +245,21 @@ void CompressorModule::process (float* const* io, int numCh, int n)
         }
     }
     grMeter.store (maxGr, std::memory_order_relaxed);
+}
+
+bool CompressorModule::isParamRelevant (int index) const
+{
+    // The optical model always uses its own two-stage, programme-dependent release.
+    if (index == pAutoRel)
+        return (Model) (int) getParam (pModel) != Model::opto;
+    return true;
+}
+
+std::string CompressorModule::irrelevantReason (int index) const
+{
+    if (index == pAutoRel && ! isParamRelevant (index))
+        return "Opto always uses its own two-stage release (about 60 ms, then the Release setting).";
+    return {};
 }
 
 } // namespace sonic

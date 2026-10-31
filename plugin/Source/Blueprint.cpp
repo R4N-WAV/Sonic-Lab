@@ -40,6 +40,14 @@ namespace
 
     bool writeText (const juce::File& f, const juce::String& s) { return f.replaceWithText (s, false, false, "\n"); }
 
+    // "0.9 ms", or "< 1.0 ms" when below what the method can resolve, or "n/a".
+    juce::String timingText (double ms, double resolution)
+    {
+        if (ms < 0) return "n/a";
+        if (ms < resolution) return "< " + juce::String (resolution, 1) + " ms";
+        return juce::String (ms, ms < 10 ? 1 : 0) + " ms";
+    }
+
     juce::String fmtNum (double v, int dp = 2)
     {
         if (! std::isfinite (v)) return "null";
@@ -209,12 +217,13 @@ namespace
     struct BlockInfo
     {
         int id = 0;
+        int stage = 0;          // 1-based position in processing order (0 = not in the signal path)
         std::string type;
         juce::String name, topology;
         bool enabled = true, active = false;
         float mix = 1, outDb = 0, x = 0, y = 0;
         int latency = 0;
-        struct P { juce::String id, name, unit, group, desc, valueText; double value, min, max, def; juce::StringArray choices; };
+        struct P { juce::String id, name, unit, group, desc, valueText; double value, min, max, def; juce::StringArray choices; bool active = true; juce::String inactiveReason; };
         std::vector<P> params;
         // isolated measurements
         double thd18 = -200, thd6 = -200, h2_18 = -200, h3_18 = -200, gain18 = 0;
@@ -222,6 +231,8 @@ namespace
         std::vector<double> staticX, staticY; // transfer / compression / eq curves
         juce::String staticKind;
     };
+
+    juce::String stageLabel (const BlockInfo& b) { return b.stage > 0 ? juce::String (b.stage).paddedLeft ('0', 2) : juce::String ("--"); }
 
     std::vector<BlockInfo> describe (const juce::ValueTree& tree, double fs, std::vector<int>& order, std::vector<sonic::Graph::Edge>& edges)
     {
@@ -240,7 +251,9 @@ namespace
             b.name = n->name;
             b.topology = n->module->topology();
             b.enabled = n->enabled.load();
-            b.active = std::find (order.begin(), order.end(), id) != order.end();
+            const auto it = std::find (order.begin(), order.end(), id);
+            b.active = it != order.end();
+            b.stage = b.active ? (int) (it - order.begin()) + 1 : 0;
             b.mix = n->mix.load();
             b.outDb = n->outGainDb.load();
             b.x = n->x; b.y = n->y;
@@ -252,6 +265,8 @@ namespace
                 BlockInfo::P p { s.id, s.name, s.unit, s.group, s.description, formatParam (s, m.getParam (i)),
                                  m.getParam (i), s.minValue, s.maxValue, s.defaultValue, {} };
                 for (auto& c : s.choices) p.choices.add (c);
+                p.active = m.isParamRelevant (i);
+                p.inactiveReason = m.irrelevantReason (i);
                 b.params.push_back (p);
             }
             // static characteristics computed from the same DSP code
@@ -375,7 +390,7 @@ namespace
         drawBox (boxOf (0), "\"INPUT\"", "Bridge input", true, true);
         drawBox (boxOf (1), "\"OUTPUT\"", "Bridge output (sum)", true, true);
         for (auto& b : blocks)
-            drawBox (boxOf (b.id), juce::String (b.id - 1).paddedLeft ('0', 2) + "  " + typeName (b.type).toUpperCase(),
+            drawBox (boxOf (b.id), stageLabel (b) + "  " + typeName (b.type).toUpperCase(),
                      b.name + (b.enabled ? "" : " (bypassed)") + "\nmix " + juce::String (juce::roundToInt (b.mix * 100)) + "%", false, b.enabled && b.active);
         return img;
     }
@@ -506,13 +521,15 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
         }
         writeWav (rel (dir.getChildFile ("audio/comparison.wav")), fs, cL, cR);
 
-        int stage = 1;
-        for (auto& b : blocks)
+        std::vector<const BlockInfo*> inOrder;
+        for (auto& b : blocks) if (b.active) inOrder.push_back (&b);
+        std::sort (inOrder.begin(), inOrder.end(), [] (auto* a, auto* c) { return a->stage < c->stage; });
+        for (auto* bp : inOrder)
         {
-            if (! b.active) continue;
+            const auto& b = *bp;
             std::vector<float> sL, sR;
             measure::render (measure::isolateBlock (bridge, b.id), fs, inL, inR, sL, sR);
-            writeWav (rel (dir.getChildFile ("audio/stage_" + juce::String (stage++).paddedLeft ('0', 2) + "_" + safeName (b.name) + ".wav")), fs, sL, sR);
+            writeWav (rel (dir.getChildFile ("audio/stage_" + juce::String (b.stage).paddedLeft ('0', 2) + "_" + safeName (b.name) + ".wav")), fs, sL, sR);
             if (stop && stop()) { error = "Cancelled."; return {}; }
         }
         if (userAudio.existsAsFile())
@@ -627,8 +644,8 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
         Series a { "Input", cGrey, {}, {} }, b { "Output", cBlue, {}, {} };
         for (size_t i = 0; i < m.envIn.size(); ++i) { a.x.push_back (i * 5.0); a.y.push_back (m.envIn[i]); b.x.push_back (i * 5.0); b.y.push_back (m.envOut[i]); }
         p.series = { a, b };
-        p.notes.add ("Attack (63 %) " + (m.attackMs >= 0 ? juce::String (m.attackMs, 0) + " ms" : juce::String ("n/a"))
-                     + "   Release (63 %) " + (m.releaseMs >= 0 ? juce::String (m.releaseMs, 0) + " ms" : juce::String ("n/a"))
+        p.notes.add ("Attack (63 %) " + timingText (m.attackMs, m.timingResolutionMs)
+                     + "   Release 63 % / 90 % " + timingText (m.releaseMs, m.timingResolutionMs) + " / " + timingText (m.release90Ms, m.timingResolutionMs)
                      + "   Gain change at step " + juce::String (m.grStepDb, 1) + " dB");
         images.push_back ({ "transient_response", renderPlot (p) });
     }
@@ -698,12 +715,14 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
             csv << "thd_vs_frequency,sine -12 dBFS," << fmtNum (m.thdFreqF[i], 0) << ",Hz," << fmtNum (m.thdFreqDb[i], 2) << ",dB,measured\n";
         for (size_t i = 0; i < m.envIn.size(); ++i)
             csv << "step_envelope_out,1 kHz -30/-6/-30 dBFS," << (i * 5) << ",ms," << fmtNum (m.envOut[i], 2) << ",dBFS,measured\n";
-        csv << "attack_time_63pct,step -30 to -6 dBFS,0,,"  << fmtNum (m.attackMs, 0) << ",ms,measured\n";
-        csv << "release_time_63pct,step -6 to -30 dBFS,0,," << fmtNum (m.releaseMs, 0) << ",ms,measured\n";
+        csv << "attack_time_63pct,step -30 to -6 dBFS,0,,"  << fmtNum (m.attackMs, 2) << ",ms,measured\n";
+        csv << "release_time_63pct,step -6 to -30 dBFS,0,," << fmtNum (m.releaseMs, 2) << ",ms,measured\n";
+        csv << "release_time_90pct,step -6 to -30 dBFS,0,," << fmtNum (m.release90Ms, 2) << ",ms,measured\n";
+        csv << "timing_resolution,synchronous demodulation,0,," << fmtNum (m.timingResolutionMs, 2) << ",ms,measured\n";
         csv << "crosstalk_l_to_r,pink noise -18 dBFS left only,0,," << fmtNum (m.crosstalkDb, 2) << ",dB,measured\n";
         csv << "correlation_mono_input,pink noise -18 dBFS L=R,0,," << fmtNum (m.corrMono, 4) << ",ratio,measured\n";
         csv << "correlation_wide_input,decorrelated pink noise,0,," << fmtNum (m.corrWide, 4) << ",ratio,measured\n";
-        csv << "noise_floor,silence,0,," << fmtNum (m.noiseFloorDb, 1) << ",dBFS,measured\n";
+        csv << "noise_floor,silence,0,," << (m.noiseFloorDb <= measure::Result::kNoiseFloorLimit ? juce::String ("below_-150") : fmtNum (m.noiseFloorDb, 1)) << ",dBFS,measured\n";
         csv << "imd_smpte,60 Hz + 7 kHz 4:1 at -12 dBFS,0,," << fmtNum (m.imdPct, 4) << ",percent,measured\n";
         csv << "latency,reported by the bridge,0,," << m.latency << ",samples,measured\n";
         writeText (rel (dir.getChildFile ("measurements/measurement_data.csv")), csv);
@@ -767,6 +786,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
             set (n, "name", b.name);
             set (n, "enabled", b.enabled);
             set (n, "in_signal_path", b.active);
+            set (n, "stage", b.stage);
             set (n, "mix", b.mix);
             set (n, "output_gain_db", b.outDb);
             set (n, "latency_samples", b.latency);
@@ -785,6 +805,8 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
                 set (pv, "default", p.def);
                 set (pv, "group", p.group);
                 set (pv, "description", p.desc);
+                set (pv, "active", p.active);
+                if (! p.active) set (pv, "inactive_reason", p.inactiveReason);
                 if (! p.choices.isEmpty()) { juce::Array<juce::var> ch; for (auto& c : p.choices) ch.add (c); set (pv, "choices", ch); }
                 ps.add (pv);
             }
@@ -847,9 +869,14 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
         set (ms, "thd_vs_frequency_m12dbfs", tf);
         juce::var dyn = obj();
         set (dyn, "classification", "measured");
-        set (dyn, "conditions", "1 kHz sine: 1 s at -30, 1 s at -6, 2 s at -30 dBFS; 5 ms RMS frames; 63 % criterion");
-        set (dyn, "attack_ms", m.attackMs);
-        set (dyn, "release_ms", m.releaseMs);
+        set (dyn, "conditions", "1 kHz sine: 1 s at -30, 1 s at -6, 3 s at -30 dBFS; gain from synchronous 1 kHz demodulation (2 ms Hann window, 0.1 ms hop); 63 % and 90 % criteria");
+        set (dyn, "timing_resolution_ms", m.timingResolutionMs);
+        auto timeVar = [&] (double v) { return v < 0 ? juce::var() : juce::var (v); };
+        set (dyn, "attack_ms", timeVar (m.attackMs));
+        set (dyn, "attack_below_resolution", m.attackMs >= 0 && m.attackMs < m.timingResolutionMs);
+        set (dyn, "release_ms", timeVar (m.releaseMs));
+        set (dyn, "release_90pct_ms", timeVar (m.release90Ms));
+        set (dyn, "note", "release_ms is the 63 % point; release_90pct_ms reveals slow second stages (e.g. optical / program-dependent release).");
         set (dyn, "gain_change_db", m.grStepDb);
         set (ms, "dynamics", dyn);
         juce::var st = obj();
@@ -859,7 +886,13 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
         set (st, "correlation_decorrelated_input", m.corrWide);
         set (st, "side_to_mid_db_decorrelated_input", m.sideToMidDb);
         set (ms, "stereo", st);
-        set (ms, "noise_floor_dbfs", m.noiseFloorDb);
+        if (m.noiseFloorDb <= measure::Result::kNoiseFloorLimit)
+        {
+            set (ms, "noise_floor_dbfs", juce::var());
+            set (ms, "noise_floor_note", "below the -150 dBFS measurement floor (digitally silent)");
+        }
+        else
+            set (ms, "noise_floor_dbfs", m.noiseFloorDb);
         set (ms, "imd_smpte_percent", m.imdPct);
         set (ms, "latency_samples", m.latency);
         set (doc, "measurements", ms);
@@ -889,8 +922,9 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
         if (l.hDbc.size() > 1 && l.hDbc[1] > -90)
             addTarget ("H3_" + juce::String ((int) l.inDb), "H3, 1 kHz at " + juce::String (l.inDb) + " dBFS", l.hDbc[1], 2.0, "dBc", "harmonic analysis");
     }
-    if (m.attackMs >= 0) addTarget ("ATTACK", "attack time (63 %)", m.attackMs, juce::jmax (5.0, m.attackMs * 0.25), "ms", "step test");
-    if (m.releaseMs >= 0) addTarget ("RELEASE", "release time (63 %)", m.releaseMs, juce::jmax (10.0, m.releaseMs * 0.25), "ms", "step test");
+    if (m.attackMs >= 0) addTarget ("ATTACK", "attack time (63 %)", m.attackMs, juce::jmax (1.0, m.timingResolutionMs, m.attackMs * 0.25), "ms", "step test, synchronous demodulation");
+    if (m.releaseMs >= 0) addTarget ("RELEASE", "release time (63 %)", m.releaseMs, juce::jmax (5.0, m.releaseMs * 0.25), "ms", "step test, synchronous demodulation");
+    if (m.release90Ms >= 0) addTarget ("RELEASE90", "release time (90 %)", m.release90Ms, juce::jmax (10.0, m.release90Ms * 0.25), "ms", "step test, synchronous demodulation");
     addTarget ("XTALK", "crosstalk L->R", m.crosstalkDb, 3.0, "dB", "left-only pink noise");
     addTarget ("CORR_WIDE", "output correlation, decorrelated input", m.corrWide, 0.05, "ratio", "decorrelated pink noise");
     if (deterministic && opt.includeAudio)
@@ -946,6 +980,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
               "name": { "type": "string" },
               "enabled": { "type": "boolean" },
               "in_signal_path": { "type": "boolean" },
+              "stage": { "type": "integer", "minimum": 0, "description": "1-based position in processing order; 0 = not in the signal path" },
               "mix": { "type": "number", "minimum": 0, "maximum": 1 },
               "output_gain_db": { "type": "number" },
               "latency_samples": { "type": "integer" },
@@ -990,7 +1025,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
     for (int id : order)
         for (auto& b : blocks)
             if (b.id == id)
-                chainText << "- **" << juce::String (b.id - 1).paddedLeft ('0', 2) << " " << b.name << "** (`" << juce::String (b.type) << "`), mix "
+                chainText << "- **" << stageLabel (b) << " " << b.name << "** (`" << juce::String (b.type) << "`), mix "
                           << juce::roundToInt (b.mix * 100) << " %, output " << juce::String (b.outDb, 1) << " dB, latency " << b.latency
                           << " samples" << (b.enabled ? "" : ", **bypassed**") << "\n";
     juce::String wiring;
@@ -998,7 +1033,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
     {
         if (id == 0) return "Input";
         if (id == 1) return "Output";
-        for (auto& b : blocks) if (b.id == id) return b.name + " (#" + juce::String (id) + ")";
+        for (auto& b : blocks) if (b.id == id) return stageLabel (b) + " " + b.name + " (node #" + juce::String (id) + ")";
         return "#" + juce::String (id);
     };
     for (auto& e : edges) wiring << "- " << nodeName (e.from) << " -> " << nodeName (e.to) << "\n";
@@ -1027,12 +1062,12 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
            << "| Measurement | Value | Classification |\n|---|---|---|\n";
     for (auto& l : m.levels)
         readme << "| 1 kHz at " << juce::String (l.inDb, 0) << " dBFS -> output | " << juce::String (l.outDb, 2) << " dBFS, THD " << juce::String (l.thdPct, 3) << " % | measured |\n";
-    readme << "| Attack / release (63 %) | " << (m.attackMs >= 0 ? juce::String (m.attackMs, 0) + " ms" : juce::String ("n/a")) << " / "
-           << (m.releaseMs >= 0 ? juce::String (m.releaseMs, 0) + " ms" : juce::String ("n/a")) << " | measured |\n"
+    readme << "| Attack (63 %) | " << timingText (m.attackMs, m.timingResolutionMs) << " | measured |\n"
+           << "| Release (63 % / 90 %) | " << timingText (m.releaseMs, m.timingResolutionMs) << " / " << timingText (m.release90Ms, m.timingResolutionMs) << " | measured |\n"
            << "| Mean coherence (linearity) | " << juce::String (m.meanCoherence, 3) << " | measured |\n"
            << "| Crosstalk L->R | " << (m.crosstalkDb < -150 ? juce::String ("< -150 dB") : juce::String (m.crosstalkDb, 1) + " dB") << " | measured |\n"
            << "| Output correlation (wide input) | " << juce::String (m.corrWide, 3) << " | measured |\n"
-           << "| Noise floor | " << (m.noiseFloorDb < -150 ? juce::String ("< -150 dBFS") : juce::String (m.noiseFloorDb, 1) + " dBFS") << " | measured |\n"
+           << "| Noise floor | " << (m.noiseFloorDb <= measure::Result::kNoiseFloorLimit ? juce::String ("< -150 dBFS") : juce::String (m.noiseFloorDb, 1) + " dBFS") << " | measured |\n"
            << "| IMD (SMPTE) | " << juce::String (m.imdPct, 4) << " % | measured |\n\n"
            << "## Files\n\n";
     // file list placeholder replaced at the end
@@ -1055,7 +1090,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
         for (auto& b : blocks)
         {
             if (b.id != id) continue;
-            req << "## Block " << juce::String (b.id - 1).paddedLeft ('0', 2) << " - " << b.name << " (`" << juce::String (b.type) << "`)\n\n"
+            req << "## Block " << stageLabel (b) << " - " << b.name << " (`" << juce::String (b.type) << "`)\n\n"
                 << "- Enabled: " << (b.enabled ? "yes" : "no (bypassed)") << "; mix " << juce::String (b.mix, 3) << "; output gain " << juce::String (b.outDb, 2)
                 << " dB; latency " << b.latency << " samples.\n\n"
                 << "**Implemented topology (MAY - reproducing it is recommended):** " << b.topology << "\n\n"
@@ -1072,7 +1107,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
                     if (! on) continue;
                 }
                 req << "| `" << p.id << "` | " << p.name << " | " << (p.choices.isEmpty() ? juce::String (p.value, 4) : p.valueText + " (" + juce::String ((int) p.value) + ")")
-                    << " | " << (p.unit.isEmpty() ? "-" : p.unit) << " | " << juce::String (p.min, 3) << " .. " << juce::String (p.max, 3) << " | " << juce::String (p.def, 3) << " |\n";
+                    << " | " << (p.unit.isEmpty() ? "-" : p.unit) << " | " << juce::String (p.min, 3) << " .. " << juce::String (p.max, 3) << " | " << juce::String (p.def, 3) << (p.active ? juce::String() : " (inactive: " + p.inactiveReason + ")") << " |\n";
             }
             if (eq) req << "\n_Bands that are off are omitted here; all bands appear in blueprint.json._\n";
             if (b.active)

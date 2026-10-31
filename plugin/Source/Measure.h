@@ -31,14 +31,18 @@ namespace measure
         double spectrumBinHz = 0.0;
 
         // dynamics (1 kHz step -30 -> -6 -> -30 dBFS)
-        std::vector<float> envIn, envOut; // dB per 5 ms frame
-        double attackMs = -1, releaseMs = -1, grStepDb = 0;
+        std::vector<float> envIn, envOut; // dB per 5 ms frame (for plots)
+        // Timing from a synchronous 1 kHz demodulator (2 ms Hann window, 0.1 ms hop).
+        // attack/release = 63 % of the gain change; release90 = 90 % (shows slow, two-stage release tails).
+        double attackMs = -1, releaseMs = -1, release90Ms = -1, grStepDb = 0;
+        double timingResolutionMs = 0.5;
 
         std::vector<float> ir;           // impulse response (latency compensated)
 
         double crosstalkDb = -200, corrMono = 1, corrWide = 0, sideToMidDb = -200;
         std::vector<float> scopeL, scopeR;
-        double noiseFloorDb = -200;
+        double noiseFloorDb = -200;      // <= kNoiseFloorLimit means "below the measurement floor"
+        static constexpr double kNoiseFloorLimit = -150.0;
         double imdPct = 0;
     };
 

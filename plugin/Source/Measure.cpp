@@ -212,7 +212,7 @@ Result run (const juce::ValueTree& tree, double fs, std::function<void (double)>
     // ---- dynamics: step response ----
     {
         std::vector<float> x;
-        for (auto [db, sec] : { std::pair<double, double> { -30.0, 1.0 }, { -6.0, 1.0 }, { -30.0, 2.0 } })
+        for (auto [db, sec] : { std::pair<double, double> { -30.0, 1.0 }, { -6.0, 1.0 }, { -30.0, 3.0 } })
         {
             auto s = sine (fs, 1000.0, db, (int) (sec * fs));
             x.insert (x.end(), s.begin(), s.end());
@@ -226,18 +226,43 @@ Result run (const juce::ValueTree& tree, double fs, std::function<void (double)>
             res.envIn.push_back ((float) sonic::gainToDb (std::sqrt (si / frame), -200.0));
             res.envOut.push_back ((float) sonic::gainToDb (std::sqrt (so / frame), -200.0));
         }
-        auto gr = [&] (size_t i) { return res.envOut[i] - res.envIn[i]; };
-        const size_t up = 200, down = 400; // frame index of the steps (5 ms frames)
-        if (res.envIn.size() > down + 300)
+
+        // Synchronous demodulation at 1 kHz: amplitude of the 1 kHz component in a 2 ms Hann window,
+        // evaluated every 0.1 ms. Gain = out / in, so only the processor's gain change remains.
+        const int win = std::max (8, (int) std::lround (0.002 * fs));
+        const int hop = std::max (1, (int) std::lround (0.0001 * fs));
+        std::vector<double> w ((size_t) win), cs ((size_t) win), sn ((size_t) win);
+        auto amp = [&] (const std::vector<float>& v, size_t start)
         {
-            const double g0 = gr (up - 5), g1 = gr (down - 5), g2 = gr (res.envIn.size() - 5);
+            double re = 0, im = 0;
+            for (int k = 0; k < win; ++k)
+            {
+                const double t = (double) (start + (size_t) k) / fs;
+                const double a = (double) v[start + (size_t) k] * 0.5 * (1.0 - std::cos (2.0 * juce::MathConstants<double>::pi * k / (win - 1)));
+                re += a * std::cos (2.0 * juce::MathConstants<double>::pi * 1000.0 * t);
+                im += a * std::sin (2.0 * juce::MathConstants<double>::pi * 1000.0 * t);
+            }
+            return std::sqrt (re * re + im * im);
+        };
+        std::vector<double> g; // gain in dB per hop, centred on start + win/2
+        for (size_t st = 0; st + (size_t) win < x.size(); st += (size_t) hop)
+            g.push_back (sonic::gainToDb (amp (oL, st) / std::max (1e-12, amp (x, st)), -200.0));
+        auto hopAt = [&] (double sec) { return (size_t) std::max (0.0, (sec * fs - win * 0.5) / hop); };
+        const size_t up = hopAt (1.0), down = hopAt (2.0);
+        const double hopMs = 1000.0 * hop / fs;
+        if (g.size() > down + 10)
+        {
+            const double g0 = g[hopAt (0.95)], g1 = g[hopAt (1.95)], g2 = g.back();
             res.grStepDb = g1 - g0;
+            res.timingResolutionMs = std::max (hopMs, 500.0 * win / fs * 0.5); // half the window: smallest time the method resolves
             if (std::abs (g1 - g0) > 0.5)
             {
                 for (size_t i = up; i < down; ++i)
-                    if (std::abs (gr (i) - g0) >= 0.632 * std::abs (g1 - g0)) { res.attackMs = (double) (i - up) * 5.0; break; }
-                for (size_t i = down; i < res.envIn.size(); ++i)
-                    if (std::abs (gr (i) - g1) >= 0.632 * std::abs (g2 - g1)) { res.releaseMs = (double) (i - down) * 5.0; break; }
+                    if (std::abs (g[i] - g0) >= 0.632 * std::abs (g1 - g0)) { res.attackMs = (double) (i - up) * hopMs; break; }
+                for (size_t i = down; i < g.size(); ++i)
+                    if (std::abs (g[i] - g1) >= 0.632 * std::abs (g2 - g1)) { res.releaseMs = (double) (i - down) * hopMs; break; }
+                for (size_t i = down; i < g.size(); ++i)
+                    if (std::abs (g[i] - g1) >= 0.9 * std::abs (g2 - g1)) { res.release90Ms = (double) (i - down) * hopMs; break; }
             }
         }
     }

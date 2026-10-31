@@ -104,6 +104,12 @@ public:
     // Live meter for the UI / analysis (thread-safe). 0 = gain reduction in dB (<= 0).
     virtual float meter (int /*which*/) const { return 0.0f; }
 
+    // False when a parameter has no effect with the current settings (e.g. a control
+    // that the selected model ignores). The UI hides it; the blueprint marks it inactive.
+    virtual bool isParamRelevant (int /*index*/) const { return true; }
+    // Short reason shown/exported when isParamRelevant() is false.
+    virtual std::string irrelevantReason (int /*index*/) const { return {}; }
+
 protected:
     void finaliseParams(); // call at the end of the derived constructor
 

@@ -4,6 +4,7 @@
 
 #include "../plugin/Source/AnalysisWorker.h"
 #include "../plugin/Source/Blueprint.h"
+#include "../plugin/Source/Measure.h"
 #include "../plugin/Source/PluginProcessor.h"
 
 #include <cstdio>
@@ -228,10 +229,50 @@ int main()
         std::unique_ptr<juce::AudioFormatReader> rIn (fm.createReaderFor (dir.getChildFile ("audio/input_reference.wav")));
         std::unique_ptr<juce::AudioFormatReader> rOut (fm.createReaderFor (dir.getChildFile ("audio/processed_reference.wav")));
         check (rIn && rOut && rIn->lengthInSamples == rOut->lengthInSamples, "reference WAVs present with equal length");
+        int stages = 0;
+        for (auto& n : *nodes.getArray()) if ((int) n["stage"] > 0) ++stages;
+        check (stages == 3, "every block in the path has a processing-order stage number");
+        check (json["measurements"]["noise_floor_dbfs"].isVoid() || (double) json["measurements"]["noise_floor_dbfs"] > -150.0,
+               "noise floor is null (not a fake number) when below the measurement floor");
         auto again = Blueprint::exportPackage (p->bridgeToTree(), o, {}, nullptr, nullptr, err);
         check (again.getFileName().endsWith ("_rev02"), "second export becomes revision 2 (" + again.getFileName() + ")");
         if (juce::SystemStats::getEnvironmentVariable ("ATELIER_KEEP_EXPORT", {}).isEmpty())
             tmp.deleteRecursively();
+    }
+
+
+    // ---- measurement accuracy: compressor timing ----
+    {
+        auto timing = [] (const char* model, float att, float rel, float autoRel)
+        {
+            sonic::Graph g;
+            const int c = g.addNode ("dynamics.compressor", 300, 120);
+            auto& m = *g.node (c)->module;
+            m.setParam ("model", (float) juce::StringArray ({ "opto", "fet", "vca", "varimu", "diode" }).indexOf (model));
+            m.setParam ("threshold_db", -24.0f); m.setParam ("ratio", 8.0f);
+            m.setParam ("attack_ms", att); m.setParam ("release_ms", rel); m.setParam ("auto_release", autoRel);
+            m.setParam ("knee_db", 0.0f); m.setParam ("detector", 0.0f);
+            g.connect (sonic::Graph::kInputId, c); g.connect (c, sonic::Graph::kOutputId);
+            juce::ValueTree t = AtelierProcessor::graphToTree (g);
+            return measure::run (t, 48000.0, nullptr, nullptr);
+        };
+        auto vca = timing ("vca", 10.0f, 100.0f, 0.0f);
+        check (vca.attackMs > 3.0 && vca.attackMs < 25.0, "VCA attack 10 ms measured as " + juce::String (vca.attackMs, 1) + " ms (63 %)");
+        check (vca.releaseMs > 40.0 && vca.releaseMs < 250.0, "VCA release 100 ms measured as " + juce::String (vca.releaseMs, 1) + " ms (63 %)");
+        auto fast = timing ("vca", 0.5f, 100.0f, 0.0f);
+        check (fast.attackMs >= 0.0 && fast.attackMs < 3.0, "fast attack is no longer rounded to a 5 ms grid (" + juce::String (fast.attackMs, 2) + " ms)");
+        auto opto = timing ("opto", 1.0f, 900.0f, 1.0f);
+        check (opto.release90Ms > 2.0 * opto.releaseMs, "Opto two-stage release visible: 63 % " + juce::String (opto.releaseMs, 0)
+                                                          + " ms, 90 % " + juce::String (opto.release90Ms, 0) + " ms");
+        sonic::Graph g;
+        const int c = g.addNode ("dynamics.compressor", 0, 0);
+        auto& m = *g.node (c)->module;
+        int autoIdx = -1;
+        for (int i = 0; i < m.numParams(); ++i) if (std::string (m.params()[(size_t) i].id) == "auto_release") autoIdx = i;
+        m.setParam ("model", 0.0f);
+        const bool hiddenOpto = ! m.isParamRelevant (autoIdx);
+        m.setParam ("model", 2.0f);
+        check (hiddenOpto && m.isParamRelevant (autoIdx), "Auto release is hidden for Opto only");
     }
 
     p->releaseResources();

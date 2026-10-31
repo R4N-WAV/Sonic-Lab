@@ -127,6 +127,7 @@ InspectorPanel::InspectorPanel (Ui& u) : ui (u)
 
 void InspectorPanel::rebuild()
 {
+    builtRelevance = relevanceKey();
     knobs.clear();
     nodeKnobs.clear();
     choices.clear();
@@ -176,7 +177,7 @@ void InspectorPanel::buildBlock (sonic::Graph::Node& n)
         for (int i = 0; i < m.numParams(); ++i)
         {
             const auto& s = m.params()[(size_t) i];
-            if (! s.simple) continue;
+            if (! s.simple || ! m.isParamRelevant (i)) continue;
             if (s.isChoice())
                 addAndMakeVisible (choices.add (new ModuleChoice (ui.proc, m, i)));
             else
@@ -204,6 +205,7 @@ void InspectorPanel::buildBlock (sonic::Graph::Node& n)
         {
             const auto& s = m.params()[(size_t) i];
             if (eq && juce::String (s.group).startsWith ("Band")) continue; // bands: use the EQ editor
+            if (! m.isParamRelevant (i)) continue;                          // ignored by the current model
             if (juce::String (s.group) != group)
             {
                 group = s.group;
@@ -390,6 +392,15 @@ void InspectorPanel::chooseFile()
     });
 }
 
+juce::String InspectorPanel::relevanceKey() const
+{
+    juce::String key;
+    if (auto* n = ui.proc.graph().node (ui.selected); n != nullptr && ui.selected >= 2)
+        for (int i = 0; i < n->module->numParams(); ++i)
+            key << (n->module->isParamRelevant (i) ? '1' : '0');
+    return key;
+}
+
 void InspectorPanel::timerCallback()
 {
     if (builtFor != ui.selected || (ui.selected >= 2 && ui.selectedNode() == nullptr))
@@ -404,6 +415,11 @@ void InspectorPanel::timerCallback()
     if (ui.selected == Graph::kInputId && (int) ui.proc.source() != lastSource)
     {
         lastSource = (int) ui.proc.source();
+        rebuild();
+        return;
+    }
+    if (relevanceKey() != builtRelevance)
+    {
         rebuild();
         return;
     }
