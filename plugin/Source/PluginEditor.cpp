@@ -108,7 +108,8 @@ void AtelierEditor::openEditor (int nodeId)
         overlay = std::make_unique<SaturationEditor> (ui, nodeId);
     else
         return; // other blocks use the inspector's advanced view
-    overlay->onClose = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<AtelierEditor> (this)] { if (safe) safe->closeEditor(); }); };
+    juce::Component::SafePointer<AtelierEditor> safe (this);
+    overlay->onClose = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->closeEditor(); }); };
     content.addAndMakeVisible (*overlay);
     overlay->setBounds (0, 72, kW, kH - 72 - 20);
     overlay->toFront (true);
@@ -123,7 +124,8 @@ void AtelierEditor::closeEditor()
 
 void AtelierEditor::showExport()
 {
-    exportDialog = Blueprint::createDialog (ui, [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<AtelierEditor> (this)] { if (safe) safe->exportDialog.reset(); }); });
+    juce::Component::SafePointer<AtelierEditor> safe (this);
+    exportDialog = Blueprint::createDialog (ui, [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->exportDialog.reset(); }); });
     content.addAndMakeVisible (*exportDialog);
     exportDialog->setBounds (0, 0, kW, kH);
     exportDialog->toFront (true);
