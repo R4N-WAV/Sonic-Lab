@@ -36,14 +36,16 @@ jobs:
 
       - name: Validate plugin (pluginval, strictness 5)
         id: pluginval
-        continue-on-error: true
         shell: pwsh
         run: |
           Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
           $p = "build\plugin\Atelier_artefacts\Release\VST3\ATELIER.vst3"
-          .\pluginval\pluginval.exe --strictness-level 5 --validate-in-process --output-dir pluginval-logs --validate $p
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $out = .\pluginval\pluginval.exe --strictness-level 5 --validate-in-process --output-dir pluginval-logs --validate $p 2>&1 | Out-String
+          Write-Output $out
+          # pluginval's exit code is unreliable when launched from pwsh; judge by its verdict line.
+          if ($out -notmatch "(?m)^SUCCESS\s*$") { Write-Error "pluginval reported failures"; exit 1 }
+          exit 0
 
       - name: Install Inno Setup
         shell: pwsh

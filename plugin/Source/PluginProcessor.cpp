@@ -134,6 +134,10 @@ AtelierProcessor::AtelierProcessor()
 
     bindParameters();
 
+    // Report the real latency before the host calls prepareToPlay.
+    latencyNow = processingChain.latencySamples();
+    setLatencySamples (latencyNow.load());
+
     formatManager.registerBasicFormats();
     readAheadThread.startThread (juce::Thread::Priority::normal);
     apvts.state.setProperty ("chainOrder", "0,1", nullptr);
