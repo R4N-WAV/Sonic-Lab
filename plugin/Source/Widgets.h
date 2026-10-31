@@ -44,10 +44,106 @@ inline juce::NormalisableRange<double> rangeFor (const sonic::ParamSpec& s)
     return r;
 }
 
+// ------------------------------------------------------------------ typing values
+
+// Parses what a person types into a number in the parameter's unit:
+// "2k" / "2.5 kHz" -> 2000 / 2500 (Hz), "-3" / "-3 dB", "50 %", "1:4" / "4:1" ratios.
+inline double parseTypedValue (juce::String text, const juce::String& unit, double fallback)
+{
+    text = text.trim().toLowerCase().replace (",", ".");
+    if (text.isEmpty()) return fallback;
+    if (unit == ":1" && text.contains (":"))
+    {
+        const double a = text.upToFirstOccurrenceOf (":", false, false).getDoubleValue();
+        const double b = text.fromFirstOccurrenceOf (":", false, false).getDoubleValue();
+        return b == 1.0 || b == 0.0 ? a : (a == 1.0 ? b : a / b);
+    }
+    double mult = 1.0;
+    if (text.containsChar ('k') && (unit == "Hz" || unit.isEmpty())) mult = 1000.0;
+    if (unit == "ms" && text.endsWith ("s") && ! text.endsWith ("ms")) mult = 1000.0; // "0.5 s"
+    const auto start = text.indexOfAnyOf ("+-.0123456789");
+    if (start < 0) return fallback;
+    return text.substring (start).getDoubleValue() * mult;
+}
+
+// Small text field that appears over a value, commits on Enter / focus loss, cancels on Esc.
+class InlineValueEditor : public juce::TextEditor
+{
+public:
+    static void show (juce::Component& host, juce::Rectangle<int> areaInHost, const juce::String& current,
+                      std::function<void (const juce::String&)> commit)
+    {
+        auto* e = new InlineValueEditor (std::move (commit));
+        host.addAndMakeVisible (e);
+        e->setBounds (areaInHost.withSizeKeepingCentre (juce::jmax (areaInHost.getWidth(), 76), juce::jmax (areaInHost.getHeight(), 22)));
+        e->setText (current, false);
+        e->selectAll();
+        e->toFront (true);
+        e->grabKeyboardFocus();
+    }
+
+private:
+    explicit InlineValueEditor (std::function<void (const juce::String&)> c) : commitFn (std::move (c))
+    {
+        setJustification (juce::Justification::centred);
+        setFont (theme::mono (11.5f));
+        setColour (juce::TextEditor::backgroundColourId, theme::bg);
+        setColour (juce::TextEditor::textColourId, theme::text);
+        setColour (juce::TextEditor::outlineColourId, theme::accent);
+        setColour (juce::TextEditor::focusedOutlineColourId, theme::accent);
+        setColour (juce::TextEditor::highlightColourId, theme::accent.withAlpha (0.35f));
+        setColour (juce::CaretComponent::caretColourId, theme::accent);
+        setSelectAllWhenFocused (true);
+        onReturnKey = [this] { finish (true); };
+        onEscapeKey = [this] { finish (false); };
+        onFocusLost = [this] { finish (true); };
+    }
+    void finish (bool apply)
+    {
+        if (done) return;
+        done = true;
+        if (apply && commitFn) commitFn (getText());
+        juce::Component::SafePointer<juce::Component> self (this);
+        juce::MessageManager::callAsync ([self] { delete self.getComponent(); });
+    }
+    std::function<void (const juce::String&)> commitFn;
+    bool done = false;
+};
+
+// Slider used everywhere in Atelier: double-click types an exact value, Alt-click resets
+// to the default, drag/scroll as usual.
+class AtelierSlider : public juce::Slider
+{
+public:
+    // Where the text field should appear, in this slider's coordinates (default: the slider itself).
+    std::function<juce::Rectangle<int>()> valueArea;
+    std::function<void()> onTypedValue;   // e.g. push an undo checkpoint
+
+    void setDefault (double v) { setDoubleClickReturnValue (true, v, juce::ModifierKeys::altModifier); }
+
+    void mouseDoubleClick (const juce::MouseEvent&) override { beginTextEntry(); }
+
+    void beginTextEntry()
+    {
+        auto* host = getParentComponent();
+        if (host == nullptr || ! isEnabled()) return;
+        auto area = (valueArea ? valueArea() : getLocalBounds()) + getPosition();
+        juce::Component::SafePointer<AtelierSlider> self (this);
+        InlineValueEditor::show (*host, area, getTextFromValue (getValue()), [self] (const juce::String& t)
+        {
+            if (self == nullptr) return;
+            const double v = juce::jlimit (self->getMinimum(), self->getMaximum(), self->getValueFromText (t));
+            self->setValue (v, juce::sendNotificationSync);
+            if (self->onTypedValue) self->onTypedValue();
+            else if (self->onDragEnd) self->onDragEnd();
+        });
+    }
+};
+
 // ------------------------------------------------------------------ module parameter controls
 
 // Slider bound directly to a block parameter (thread-safe atomics in the module).
-class ModuleSlider : public juce::Slider
+class ModuleSlider : public AtelierSlider
 {
 public:
     ModuleSlider (AtelierProcessor& p, sonic::Module& m, int index, bool rotary)
@@ -58,8 +154,8 @@ public:
         setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         setNormalisableRange (rangeFor (s));
         setValue (mod.getParam (idx), juce::dontSendNotification);
-        setDoubleClickReturnValue (true, s.defaultValue);
-        setTooltip (juce::String (s.name) + ": " + juce::String (s.description));
+        setDefault (s.defaultValue);
+        setTooltip (juce::String (s.name) + ": " + juce::String (s.description) + "\nDouble-click to type a value, Alt-click to reset.");
         setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
         onValueChange = [this] { mod.setParam (idx, (float) getValue()); };
         onDragEnd = [this] { proc.checkpoint(); };
@@ -72,6 +168,7 @@ public:
     }
 
     juce::String getTextFromValue (double v) override { return formatParam (mod.params()[(size_t) idx], (float) v); }
+    double getValueFromText (const juce::String& t) override { return parseTypedValue (t, mod.params()[(size_t) idx].unit, getValue()); }
     const sonic::ParamSpec& spec() const { return mod.params()[(size_t) idx]; }
 
 private:
@@ -159,8 +256,10 @@ public:
     {
         slider.getProperties().set ("beige", beige);
         slider.onValueChange = [this, &m, index] { m.setParam (index, (float) slider.getValue()); repaint(); };
+        slider.valueArea = [this] { return getLocalBounds().removeFromBottom (18).reduced (6, 0) - slider.getPosition(); };
         addAndMakeVisible (slider);
     }
+    void mouseDoubleClick (const juce::MouseEvent&) override { slider.beginTextEntry(); }
     void sync() { slider.sync(); repaint(); }
     void resized() override
     {
@@ -194,6 +293,7 @@ public:
         {
             slider = std::make_unique<ModuleSlider> (p, m, index, false);
             slider->onValueChange = [this] { mod.setParam (idx, (float) slider->getValue()); repaint(); };
+            slider->valueArea = [this] { return getLocalBounds().removeFromRight (valueW) - slider->getPosition(); };
         }
         if (choice) addAndMakeVisible (*choice);
         if (slider) addAndMakeVisible (*slider);
@@ -204,6 +304,7 @@ public:
         if (slider) slider->sync();
         repaint();
     }
+    void mouseDoubleClick (const juce::MouseEvent&) override { if (slider) slider->beginTextEntry(); }
     void resized() override
     {
         auto r = getLocalBounds();
@@ -258,10 +359,12 @@ public:
             slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             addAndMakeVisible (slider);
             sliderAtt = std::make_unique<SliderAttachment> (st, id, slider);
-            slider.setDoubleClickReturnValue (true, param->convertFrom0to1 (param->getDefaultValue()));
+            slider.setDefault (param->convertFrom0to1 (param->getDefaultValue()));
+            slider.valueArea = [this] { return getLocalBounds().removeFromRight (74) - slider.getPosition(); };
             slider.onValueChange = [this] { repaint(); };
         }
     }
+    void mouseDoubleClick (const juce::MouseEvent&) override { if (! combo.isVisible()) slider.beginTextEntry(); }
     void resized() override
     {
         auto r = getLocalBounds();
@@ -285,7 +388,7 @@ public:
 private:
     juce::String caption;
     juce::RangedAudioParameter* param = nullptr;
-    juce::Slider slider;
+    AtelierSlider slider;
     juce::ComboBox combo;
     std::unique_ptr<SliderAttachment> sliderAtt;
     std::unique_ptr<ComboAttachment> comboAtt;
@@ -320,6 +423,28 @@ namespace plot
     {
         return dbMin + (double) ((r.getBottom() - y) / r.getHeight()) * (dbMax - dbMin);
     }
+    // Level (dB) of a linear-bin spectrum over the column [f0, f1]: the strongest bin when the
+    // column spans several bins, otherwise a smooth interpolation between neighbouring bins
+    // (so the bass is drawn as a curve, not a staircase).
+    inline float sampleSpectrum (const std::vector<float>& s, double binHz, double f0, double f1)
+    {
+        if (s.size() < 4 || binHz <= 0.0) return -200.0f;
+        const double k0 = f0 / binHz, k1 = f1 / binHz;
+        const int last = (int) s.size() - 1;
+        if ((int) k1 - (int) k0 >= 1)
+        {
+            float v = -200.0f;
+            for (int k = juce::jmax (1, (int) std::ceil (k0)); k <= juce::jmin (last, (int) k1); ++k) v = juce::jmax (v, s[(size_t) k]);
+            return v;
+        }
+        const double kc = juce::jlimit (1.0, (double) last - 1.0, std::sqrt (k0 * k1));
+        const int i = (int) kc;
+        const double t = kc - i;
+        // cosine interpolation keeps peaks round instead of pointed
+        const double w = 0.5 - 0.5 * std::cos (t * juce::MathConstants<double>::pi);
+        return (float) ((1.0 - w) * s[(size_t) i] + w * s[(size_t) i + 1]);
+    }
+
     inline juce::String noteName (double f)
     {
         static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };

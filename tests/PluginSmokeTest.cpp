@@ -5,6 +5,7 @@
 #include "../plugin/Source/AnalysisWorker.h"
 #include "../plugin/Source/Blueprint.h"
 #include "../plugin/Source/Measure.h"
+#include "../plugin/Source/Widgets.h"
 #include "../plugin/Source/PluginProcessor.h"
 
 #include <cstdio>
@@ -188,6 +189,13 @@ int main()
             std::printf ("    (L/R max difference %.6f, L rms %.4f)\n", maxDiff, rms (b.getReadPointer (0), block));
         }
         check (r.stereoValid && r.correlation > 0.9, "correlation of identical L/R ~1 (" + juce::String (r.correlation, 3) + ")");
+        AnalysisWorker::Results a, b2;
+        worker.getResults (a, -1);
+        juce::Thread::sleep (500);
+        worker.getResults (b2, -1);
+        const double fps = (b2.serial - a.serial) / 0.5;
+        check (fps > 40.0, "spectrum refreshes smoothly (" + juce::String (fps, 0) + " frames/s)");
+        check (b2.fftSize <= 4096, "display FFT is short for low latency (" + juce::String (b2.fftSize) + ")");
     }
 
     std::printf ("Blueprint export\n");
@@ -240,6 +248,13 @@ int main()
             tmp.deleteRecursively();
     }
 
+
+    // ---- typed values ----
+    check (std::abs (parseTypedValue ("2k", "Hz", 0) - 2000.0) < 1e-9 && std::abs (parseTypedValue ("2.5 kHz", "Hz", 0) - 2500.0) < 1e-9,
+           "typing '2k' / '2.5 kHz' gives 2000 / 2500 Hz");
+    check (std::abs (parseTypedValue ("-3,5 dB", "dB", 0) + 3.5) < 1e-9 && std::abs (parseTypedValue ("4:1", ":1", 0) - 4.0) < 1e-9
+           && std::abs (parseTypedValue ("0.5 s", "ms", 0) - 500.0) < 1e-9 && std::abs (parseTypedValue ("abc", "dB", 7.0) - 7.0) < 1e-9,
+           "typing '-3,5 dB', '4:1', '0.5 s' parses; nonsense keeps the old value");
 
     // ---- measurement accuracy: compressor timing ----
     {

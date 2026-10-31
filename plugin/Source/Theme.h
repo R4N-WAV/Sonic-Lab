@@ -40,6 +40,7 @@ namespace theme
     const juce::Colour bad       { 0xffb0645c };
     const juce::Colour shadow    { 0xff16233a };
     const juce::Colour rowSel    { 0xff1e1a10 };
+    const juce::Colour accent    { 0xffb9a27c };
 
     struct Faces
     {

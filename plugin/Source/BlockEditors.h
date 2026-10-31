@@ -12,6 +12,8 @@ public:
     BlockEditor (Ui& ui, int nodeId) : ui (ui), nodeId (nodeId) {}
     std::function<void()> onClose;
     int node() const { return nodeId; }
+    // Called on every display refresh that brought new analysis data.
+    virtual void analysisUpdated() {}
 protected:
     sonic::Graph::Node* nodePtr() { return ui.proc.graph().node (nodeId); }
     Ui& ui;
@@ -32,6 +34,7 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    void analysisUpdated() override;
 
 private:
     using EQ = sonic::ParametricEqModule;
@@ -65,7 +68,7 @@ private:
     std::unique_ptr<ModuleParamRow> outputRow;
     // EQ match
     juce::TextButton refButton { "LOAD REFERENCE..." }, learnButton { "LEARN INPUT" }, applyButton { "APPLY MATCH" };
-    juce::Slider amount, maxBands;
+    AtelierSlider amount, maxBands;
     std::vector<double> refFreq, refDb;         // reference long-term spectrum
     std::vector<double> learnPow;               // accumulated input power per analysis bin
     double learnBinHz = 0.0;

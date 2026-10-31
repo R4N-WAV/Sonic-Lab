@@ -68,10 +68,25 @@ void AtelierEditor::resized()
 
 void AtelierEditor::timerCallback()
 {
-    if (! ui.frozen && worker.getResults (ui.res, ui.res.serial))
+    // Fallback for hosts/platforms where vertical-blank callbacks do not arrive.
+    if (juce::Time::getMillisecondCounterHiRes() - lastVBlank > 100.0)
+        onVBlank();
+}
+
+void AtelierEditor::onVBlank()
+{
+    lastVBlank = juce::Time::getMillisecondCounterHiRes();
+    if (ui.frozen || ! worker.getResults (ui.res, ui.res.serial))
+        return;
+    if (overlay != nullptr)
+        overlay->analysisUpdated();
+    else
+        spectrum.repaintPlot();
+    // numbers change slowly and are read, not watched: ~10 repaints per second is plenty
+    if (lastVBlank - lastReadoutPaint > 100.0)
     {
-        spectrum.repaint();
         readout.repaint();
+        lastReadoutPaint = lastVBlank;
     }
 }
 

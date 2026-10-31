@@ -41,7 +41,8 @@ namespace
 
 AnalysisWorker::AnalysisWorker (AtelierProcessor& p) : juce::Thread ("Atelier analysis"), proc (p)
 {
-    startThread (juce::Thread::Priority::low);
+    // Normal priority: a starved low-priority thread is what made the spectrum lag in busy sessions.
+    startThread (juce::Thread::Priority::normal);
 }
 
 AnalysisWorker::~AnalysisWorker()
@@ -49,10 +50,17 @@ AnalysisWorker::~AnalysisWorker()
     stopThread (2000);
 }
 
-void AnalysisWorker::setMode (Mode m) { mode = (int) m; resetRequested = true; }
+void AnalysisWorker::setMode (Mode m) { mode = (int) m; resetRequested = true; resetSpectra = true; }
 void AnalysisWorker::setFftSize (int size) { fftSize = size; }
 void AnalysisWorker::setWindow (sonic::WindowType w) { window = (int) w; }
-void AnalysisWorker::resetAveraging() { resetRequested = true; }
+void AnalysisWorker::resetAveraging() { resetRequested = true; resetSpectra = true; }
+
+int AnalysisWorker::displayFftSize (double fs) const
+{
+    const int forced = fftSize.load();
+    if (forced > 0) return forced;
+    return fs > 50000.0 ? 8192 : 4096;   // ~85-93 ms window: responsive but still resolves bass
+}
 
 bool AnalysisWorker::getResults (Results& dest, int lastSerial) const
 {
@@ -65,18 +73,83 @@ bool AnalysisWorker::getResults (Results& dest, int lastSerial) const
 
 void AnalysisWorker::run()
 {
+    double lastFast = juce::Time::getMillisecondCounterHiRes();
+    double lastSlow = 0.0;
     while (! threadShouldExit())
     {
-        analyse();
-        wait (60); // ~15 updates per second
+        const double t0 = juce::Time::getMillisecondCounterHiRes();
+        analyseSpectrum (t0 - lastFast);
+        lastFast = t0;
+        if (t0 - lastSlow >= 120.0)
+        {
+            analyseSlow();
+            lastSlow = t0;
+        }
+        publish();
+        const double spent = juce::Time::getMillisecondCounterHiRes() - t0;
+        wait (juce::jmax (1, (int) (16.0 - spent)));   // ~60 frames per second
     }
 }
 
-void AnalysisWorker::analyse()
+void AnalysisWorker::publish()
+{
+    Results r = slowCache;
+    r.spectrumX = avgX;
+    r.spectrumY = avgY;
+    r.fftSize = spectrumFft;
+    r.sampleRate = spectrumRate > 0.0 ? spectrumRate : r.sampleRate;
+    r.window = spectrumWindow;
+    r.serial = ++serial;
+    const juce::ScopedLock sl (lock);
+    latest = std::move (r);
+}
+
+void AnalysisWorker::analyseSpectrum (double dtMs)
 {
     using SC = AtelierProcessor;
     const double fs = proc.currentSampleRate();
-    const int nfft = fftSize.load();
+    const int nfft = displayFftSize (fs);
+    const auto win = (sonic::WindowType) window.load();
+    const auto m = (Mode) mode.load();
+    const size_t end = proc.scope.totalWritten();
+    if (! proc.scope.read (end, nfft, fastFrames))
+        return;
+    const auto& x = m == Mode::chain ? fastFrames[SC::scopePre] : fastFrames[SC::scopeSidechain];
+    const auto& y = m == Mode::chain ? fastFrames[SC::scopePostL] : fastFrames[SC::scopePre];
+    const auto sx = sonic::computeSpectrum (x.data(), (int) x.size(), nfft, fs, win);
+    const auto sy = sonic::computeSpectrum (y.data(), (int) y.size(), nfft, fs, win);
+
+    if (resetSpectra.exchange (false) || avgX.size() != sx.amplitude.size() || spectrumRate != fs)
+    {
+        avgX.assign (sx.amplitude.size(), -200.0f);
+        avgY.assign (sy.amplitude.size(), -200.0f);
+    }
+    // Ballistics in the power domain, independent of the frame rate:
+    // rises almost immediately (~15 ms), falls smoothly (~200 ms) - like a good analyser.
+    const float dt = (float) juce::jlimit (1.0, 200.0, dtMs);
+    const float kUp = std::exp (-dt / 15.0f), kDown = std::exp (-dt / 200.0f);
+    auto blend = [kUp, kDown] (std::vector<float>& avg, const std::vector<double>& amp)
+    {
+        for (size_t i = 0; i < amp.size(); ++i)
+        {
+            const float p = (float) (amp[i] * amp[i]);
+            const float old = avg[i] <= -199.0f ? p : std::pow (10.0f, avg[i] * 0.1f);
+            const float k = p > old ? kUp : kDown;
+            avg[i] = 10.0f * std::log10 (juce::jmax (1e-20f, old * k + p * (1.0f - k)));
+        }
+    };
+    blend (avgX, sx.amplitude);
+    blend (avgY, sy.amplitude);
+    spectrumFft = nfft;
+    spectrumRate = fs;
+    spectrumWindow = win;
+}
+
+void AnalysisWorker::analyseSlow()
+{
+    using SC = AtelierProcessor;
+    const double fs = proc.currentSampleRate();
+    const int nfft = 16384;   // harmonics need fine resolution; not used for display
     const auto win = (sonic::WindowType) window.load();
     const auto m = (Mode) mode.load();
 
@@ -92,35 +165,10 @@ void AnalysisWorker::analyse()
 
     Results r;
     r.sampleRate = fs;
-    r.fftSize = nfft;
     r.window = win;
     r.mode = m;
 
-    // ---- spectra (last nfft samples) ----
-    const auto sx = sonic::computeSpectrum (x.data(), (int) x.size(), nfft, fs, win);
-    const auto sy = sonic::computeSpectrum (y.data(), (int) y.size(), nfft, fs, win);
-
-    const bool sizeChanged = avgX.size() != sx.amplitude.size();
-    if (resetRequested.load() || sizeChanged || (int) m != lastMode)
-    {
-        avgX.assign (sx.amplitude.size(), -200.0f);
-        avgY.assign (sy.amplitude.size(), -200.0f);
-    }
-    // Display averaging in the power domain (~0.3 s). Measurements below use raw data.
-    const float k = 0.6f;
-    auto blend = [k] (std::vector<float>& avg, const std::vector<double>& amp)
-    {
-        for (size_t i = 0; i < amp.size(); ++i)
-        {
-            const float p = (float) (amp[i] * amp[i]);
-            const float old = avg[i] <= -199.0f ? p : std::pow (10.0f, avg[i] / 10.0f);
-            avg[i] = 10.0f * std::log10 (juce::jmax (1e-20f, old * k + p * (1.0f - k)));
-        }
-    };
-    blend (avgX, sx.amplitude);
-    blend (avgY, sy.amplitude);
-    r.spectrumX = avgX;
-    r.spectrumY = avgY;
+    const auto sy = sonic::computeSpectrum (y.data(), (int) y.size(), nfft, fs, sonic::WindowType::blackmanHarris4);
 
     const std::vector<float> yTail (y.end() - nfft, y.end()), xTail (x.end() - nfft, x.end());
     r.rmsYdB = rmsDb (yTail);
@@ -239,7 +287,5 @@ void AnalysisWorker::analyse()
                              "Use pink/white noise, a sweep or music for a full response.";
     }
 
-    r.serial = ++serial;
-    const juce::ScopedLock sl (lock);
-    latest = std::move (r);
+    slowCache = std::move (r);
 }

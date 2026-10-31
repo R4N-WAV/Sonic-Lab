@@ -32,6 +32,7 @@ public:
     void resized() override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
+    void repaintPlot() { repaint (plotArea().toNearestInt().expanded (4)); }
 
 private:
     juce::Rectangle<float> plotArea() const;
@@ -57,6 +58,24 @@ public:
     void resized() override;
 
 private:
+    // Calm harmonics display: values must be valid for a few frames before they show,
+    // are smoothed while shown, and are held (dimmed) for a while when the signal stops
+    // being measurable, so the panel never flickers between numbers and messages.
+    struct HarmonicsView
+    {
+        bool showing = false;
+        bool held = false;
+        bool estimated = false;
+        double f0 = 0.0, thdPct = 0.0;
+        std::array<double, 6> dbc {};
+        int validStreak = 0;
+        double lastValidMs = 0.0, invalidSinceMs = 0.0;
+        juce::String note;
+        int lastSerial = -1;
+        void update (const AnalysisWorker::Results& r, double nowMs);
+    };
+
     Ui& ui;
+    HarmonicsView hv;
     juce::TextButton chainMode { "CHAIN" }, refMode { "REFERENCE" };
 };

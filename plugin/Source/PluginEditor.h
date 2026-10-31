@@ -19,6 +19,7 @@ public:
 
 private:
     void timerCallback() override;
+    void onVBlank();
     void openEditor (int nodeId);
     void closeEditor();
     void showExport();
@@ -41,4 +42,6 @@ private:
     std::unique_ptr<BlockEditor> overlay;
     std::unique_ptr<juce::Component> exportDialog;
     juce::TooltipWindow tooltips { this, 700 };
+    double lastReadoutPaint = 0.0, lastVBlank = 0.0;
+    juce::VBlankAttachment vblank { this, [this] { onVBlank(); } };   // repaint in step with the display
 };

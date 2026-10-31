@@ -33,8 +33,10 @@ InspectorPanel::NodeKnob::NodeKnob (Ui& u, int nodeId, bool isMix) : ui (u), id 
     slider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
-    if (mix) { slider.setRange (0.0, 100.0, 0.1); slider.setDoubleClickReturnValue (true, 100.0); slider.getProperties().set ("beige", true); }
-    else { slider.setRange (-24.0, 24.0, 0.01); slider.setDoubleClickReturnValue (true, 0.0); }
+    if (mix) { slider.setRange (0.0, 100.0, 0.1); slider.setDefault (100.0); slider.getProperties().set ("beige", true); slider.setTextValueSuffix (" %"); }
+    else { slider.setRange (-24.0, 24.0, 0.01); slider.setDefault (0.0); slider.setTextValueSuffix (" dB"); }
+    slider.setNumDecimalPlacesToDisplay (1);
+    slider.valueArea = [this] { return getLocalBounds().removeFromBottom (18).reduced (8, 0) - slider.getPosition(); };
     slider.setTooltip (mix ? "Mix: blend between this block's input (0 %) and its processed output (100 %), time-aligned."
                            : "Output level of this block.");
     slider.onValueChange = [this]

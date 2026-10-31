@@ -234,6 +234,8 @@ void EqEditor::resized()
     maxBands.setBounds (p.removeFromTop (22).withTrimmedLeft (90));
 }
 
+void EqEditor::analysisUpdated() { repaint (kDisplay); }
+
 void EqEditor::timerCallback()
 {
     if (nodePtr() == nullptr) { if (onClose) onClose(); return; }
@@ -305,8 +307,8 @@ void EqEditor::paint (juce::Graphics& g)
         for (int x = 0; x <= (int) pr.getWidth(); x += 3)
         {
             const double f = 20.0 * std::pow (1000.0, x / pr.getWidth());
-            const int k = juce::jlimit (1, (int) ui.res.spectrumY.size() - 1, (int) (f / binHz));
-            const float y = plot::dbToY (juce::jlimit (-100.0, 0.0, (double) ui.res.spectrumY[(size_t) k]), pr, -100.0, 0.0);
+            const double fn = 20.0 * std::pow (1000.0, (x + 3) / pr.getWidth());
+            const float y = plot::dbToY (juce::jlimit (-100.0, 0.0, (double) plot::sampleSpectrum (ui.res.spectrumY, binHz, f, fn)), pr, -100.0, 0.0);
             a.lineTo (pr.getX() + x, y);
         }
         a.lineTo (pr.getRight(), pr.getBottom());
@@ -697,6 +699,10 @@ SaturationEditor::SaturationEditor (Ui& u, int id) : BlockEditor (u, id)
             s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             s.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
             s.setRange (0, 100, 0.1);
+            s.setDefault (100.0);
+            s.setTextValueSuffix (" %");
+            s.setNumDecimalPlacesToDisplay (0);
+            s.valueArea = [this] { return getLocalBounds().removeFromBottom (18).reduced (8, 0) - s.getPosition(); };
             s.getProperties().set ("beige", true);
             if (auto* n = ui.proc.graph().node (nid)) s.setValue (n->mix.load() * 100.0, juce::dontSendNotification);
             s.onValueChange = [this] { if (auto* n = ui.proc.graph().node (nid)) n->mix = (float) s.getValue() * 0.01f; repaint(); };
@@ -704,6 +710,7 @@ SaturationEditor::SaturationEditor (Ui& u, int id) : BlockEditor (u, id)
             addAndMakeVisible (s);
         }
         void resized() override { s.setBounds (getLocalBounds().withTrimmedBottom (34)); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { s.beginTextEntry(); }
         void paint (juce::Graphics& g) override
         {
             auto r = getLocalBounds().removeFromBottom (32);
@@ -712,7 +719,7 @@ SaturationEditor::SaturationEditor (Ui& u, int id) : BlockEditor (u, id)
             g.setColour (theme::textDim); g.setFont (theme::mono (10.0f));
             g.drawText (juce::String (s.getValue(), 0) + " %", r, juce::Justification::centred);
         }
-        Ui& ui; int nid; juce::Slider s;
+        Ui& ui; int nid; AtelierSlider s;
     };
     mixKnob = std::make_unique<MixKnob> (ui, nodeId);
     addAndMakeVisible (*mixKnob);

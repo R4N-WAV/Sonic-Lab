@@ -26,7 +26,8 @@ private:
         void resized() override;
         void paint (juce::Graphics&) override;
         void sync();
-        juce::Slider slider;
+        AtelierSlider slider;
+        void mouseDoubleClick (const juce::MouseEvent&) override { slider.beginTextEntry(); }
     private:
         Ui& ui;
         int id;

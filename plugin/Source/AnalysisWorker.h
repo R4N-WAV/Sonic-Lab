@@ -3,6 +3,10 @@
 // scope FIFO and computes spectra, harmonics and transfer functions off the
 // audio thread. The UI copies the latest Results under a lock (the audio
 // thread never touches this lock).
+//
+// Two rates: the display spectrum is refreshed ~60 times per second from a short
+// FFT (low latency, smooth motion); loudness, true peak, harmonics and the
+// transfer function are refreshed ~8 times per second.
 
 #include "PluginProcessor.h"
 
@@ -63,16 +67,20 @@ public:
 
 private:
     void run() override;
-    void analyse();
+    void analyseSpectrum (double dtMs);   // fast path
+    void analyseSlow();                   // measurements
+    void publish();
+    int displayFftSize (double fs) const;
 
     AtelierProcessor& proc;
     mutable juce::CriticalSection lock;
     Results latest;
 
     std::atomic<int> mode { (int) Mode::chain };
-    std::atomic<int> fftSize { 8192 };
+    std::atomic<int> fftSize { 0 };   // 0 = automatic (4096 up to 50 kHz, 8192 above)
     std::atomic<int> window { (int) sonic::WindowType::blackmanHarris4 };
-    std::atomic<bool> resetRequested { true };
+    std::atomic<bool> resetRequested { true };   // transfer / measurement state
+    std::atomic<bool> resetSpectra { true };     // display averaging
 
     // worker-thread state
     sonic::TransferAnalyzer transfer;
@@ -82,6 +90,10 @@ private:
     int lastMode = -1;
     size_t lastTransferIndex = 0;
     std::vector<float> avgX, avgY;
-    std::array<std::vector<float>, AtelierProcessor::numScopeChannels> frames;
+    std::array<std::vector<float>, AtelierProcessor::numScopeChannels> frames, fastFrames;
+    Results slowCache;                    // last measurement results (without spectra)
+    int spectrumFft = 4096;
+    double spectrumRate = 0.0;
+    sonic::WindowType spectrumWindow = sonic::WindowType::blackmanHarris4;
     int serial = 0;
 };

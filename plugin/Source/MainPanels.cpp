@@ -175,9 +175,7 @@ void SpectrumPanel::drawCurve (juce::Graphics& g, const std::vector<float>& s, j
         const double f0 = 20.0 * std::pow (1000.0, (double) x / cols);
         const double f1 = 20.0 * std::pow (1000.0, (double) (x + 2) / cols);
         if (f0 > fMax) break;
-        int k0 = juce::jmax (1, (int) (f0 / binHz)), k1 = juce::jmin ((int) s.size() - 1, juce::jmax (k0, (int) (f1 / binHz)));
-        float v = -200.0f;
-        for (int k = k0; k <= k1; ++k) v = juce::jmax (v, s[(size_t) k]);
+        const float v = plot::sampleSpectrum (s, binHz, f0, f1);
         const float y = plot::dbToY (juce::jlimit (dbMin - 6, dbMax, (double) v), r, dbMin, dbMax);
         lastX = r.getX() + (float) x;
         if (! started) { p.startNewSubPath (lastX, y); started = true; }
@@ -373,8 +371,51 @@ void ReadoutPanel::resized()
     chainMode.setBounds (r.removeFromRight (60));
 }
 
+void ReadoutPanel::HarmonicsView::update (const AnalysisWorker::Results& r, double now)
+{
+    if (r.serial == lastSerial) return;
+    lastSerial = r.serial;
+    const bool valid = r.harmonicsAvailable && r.harmonics.levelDbc.size() > 1;
+    if (valid)
+    {
+        ++validStreak;
+        lastValidMs = now;
+        invalidSinceMs = 0.0;
+        // a new fundamental (> 3 %) restarts the smoothing instead of sliding across
+        const bool jump = f0 <= 0.0 || std::abs (r.harmonics.fundamentalHz / f0 - 1.0) > 0.03;
+        if (validStreak >= 3 || showing)
+        {
+            const double k = (jump || ! showing || held) ? 0.0 : 0.75;   // ~0.5 s smoothing at 8 updates/s
+            f0 = jump ? r.harmonics.fundamentalHz : k * f0 + (1.0 - k) * r.harmonics.fundamentalHz;
+            thdPct = k * thdPct + (1.0 - k) * r.harmonics.thdPercent;
+            for (size_t i = 0; i < dbc.size(); ++i)
+            {
+                const double v = r.harmonics.levelDbc.size() > i + 1 ? juce::jmax (-120.0, r.harmonics.levelDbc[i + 1]) : -120.0;
+                dbc[i] = k * dbc[i] + (1.0 - k) * v;
+            }
+            estimated = r.f0Estimated;
+            showing = true;
+            held = false;
+        }
+    }
+    else
+    {
+        validStreak = 0;
+        if (invalidSinceMs <= 0.0) invalidSinceMs = now;
+        if (showing)
+        {
+            held = true;
+            if (now - lastValidMs > 4000.0) { showing = false; held = false; f0 = 0.0; }   // hold the last reading for 4 s
+        }
+        // only change the message after it has been true for a moment
+        if (now - invalidSinceMs > 800.0 || note.isEmpty())
+            note = r.harmonicsNote.isNotEmpty() ? r.harmonicsNote : juce::String ("Play a steady tone (or the generator sine) to read harmonics.");
+    }
+}
+
 void ReadoutPanel::paint (juce::Graphics& g)
 {
+    hv.update (ui.res, juce::Time::getMillisecondCounterHiRes());
     theme::drawPanel (g, getLocalBounds(), "Readout");
     const auto& res = ui.res;
     auto r = getLocalBounds().reduced (16, 0).withTrimmedTop (52);
@@ -406,7 +447,7 @@ void ReadoutPanel::paint (juce::Graphics& g)
     r.removeFromTop (12);
     row = r.removeFromTop (44);
     cell (row.removeFromLeft (cw), "STEREO CORR.", res.stereoValid ? juce::String (res.correlation, 2) : "-", "");
-    cell (row, "THD", res.harmonicsAvailable ? juce::String (res.harmonics.thdPercent, res.harmonics.thdPercent < 1 ? 3 : 2) : "-", "%");
+    cell (row, "THD", hv.showing ? juce::String (hv.thdPct, hv.thdPct < 1 ? 3 : 2) : "-", "%");
 
     r.removeFromTop (14);
     g.setColour (theme::dashed);
@@ -417,11 +458,12 @@ void ReadoutPanel::paint (juce::Graphics& g)
     auto head = r.removeFromTop (16);
     g.setColour (theme::textDim);
     g.setFont (theme::mono (9.5f));
-    g.drawText ("HARMONICS" + (res.harmonicsAvailable ? juce::String (" - F0 ") + formatValue (res.harmonics.fundamentalHz, "Hz").toUpperCase() : juce::String()),
+    g.drawText ("HARMONICS" + (hv.showing ? juce::String (" - F0 ") + formatValue (hv.f0, "Hz").toUpperCase() : juce::String()),
                 head, juce::Justification::centredLeft);
-    if (res.harmonicsAvailable)
-        theme::drawTag (g, head.removeFromRight (82), res.f0Estimated ? "ESTIMATED" : "MEASURED",
-                        res.f0Estimated ? theme::warn : theme::good, res.f0Estimated ? theme::warn.darker (0.4f) : theme::goodEdge, theme::panel);
+    if (hv.showing)
+        theme::drawTag (g, head.removeFromRight (82), hv.held ? "HELD" : (hv.estimated ? "ESTIMATED" : "MEASURED"),
+                        hv.held ? theme::textDim : (hv.estimated ? theme::warn : theme::good),
+                        hv.held ? theme::edge : (hv.estimated ? theme::warn.darker (0.4f) : theme::goodEdge), theme::panel);
     r.removeFromTop (8);
     auto bars = r.removeFromTop (92);
     g.setColour (theme::edge);
@@ -431,11 +473,9 @@ void ReadoutPanel::paint (juce::Graphics& g)
     for (int i = 0; i < nb; ++i)
     {
         auto b = juce::Rectangle<int> (bars.getX() + i * (bw + 6), bars.getY(), bw, bars.getHeight());
-        double dbc = -120.0;
-        if (res.harmonicsAvailable && (int) res.harmonics.levelDbc.size() > i + 1)
-            dbc = res.harmonics.levelDbc[(size_t) i + 1];
+        const double dbc = hv.showing ? hv.dbc[(size_t) i] : -120.0;
         const float h = (float) juce::jlimit (0.0, 1.0, (dbc + 100.0) / 100.0) * (float) b.getHeight();
-        g.setColour (i % 2 == 0 ? theme::signalBlue : theme::reference.brighter (0.2f));
+        g.setColour ((i % 2 == 0 ? theme::signalBlue : theme::reference.brighter (0.2f)).withMultipliedAlpha (hv.held ? 0.45f : 1.0f));
         g.fillRect ((float) b.getX(), (float) b.getBottom() - h, (float) b.getWidth(), h);
         g.setColour (theme::textDim);
         g.setFont (theme::mono (9.5f));
@@ -444,10 +484,10 @@ void ReadoutPanel::paint (juce::Graphics& g)
     r.removeFromTop (20);
     g.setColour (theme::textDim);
     g.setFont (theme::sans (11.5f));
-    juce::String note = res.harmonicsAvailable
-        ? (res.f0Estimated ? juce::String ("f0 estimated from the spectrum peak: valid for a single steady tone.")
-                           : juce::String ("Exact: fundamental known from the generator."))
-        : (res.harmonicsNote.isNotEmpty() ? res.harmonicsNote : juce::String ("Play a sine with the generator (Input block) for exact harmonics."));
+    juce::String note = hv.showing && ! hv.held
+        ? (hv.estimated ? juce::String ("f0 estimated from the spectrum peak: valid for a single steady tone.")
+                        : juce::String ("Exact: fundamental known from the generator."))
+        : (hv.held ? juce::String ("Holding the last stable reading. ") + hv.note : hv.note);
     if (res.mode == AnalysisWorker::Mode::reference)
     {
         const auto sc = ui.proc.sidechainState();
