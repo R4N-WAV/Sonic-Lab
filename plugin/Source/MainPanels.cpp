@@ -1,4 +1,5 @@
 #include "MainPanels.h"
+#include "Templates.h"
 
 #include <sonic/modules/ParametricEqModule.h>
 
@@ -32,9 +33,111 @@ HeaderBar::HeaderBar (Ui& u) : ui (u)
     exportButton.setTooltip ("Export a complete engineering blueprint of this sound (document, JSON, graphs, measurements, audio).");
     exportButton.onClick = [this] { if (onExport) onExport(); };
 
-    for (auto* b : { &aButton, &bButton, &matchButton, &undoButton, &redoButton, &exportButton })
+    navButton.setTooltip ("Back to the Bridge (Esc).");
+    navButton.onClick = [this] { if (ui.backToBridge) ui.backToBridge(); };
+    templatesButton.getProperties().set ("colour", (int) theme::accent.getARGB());
+    templatesButton.setTooltip ("Start from a template (hardware styles, mixing chains, effects), or save / delete your own.");
+    templatesButton.onClick = [this] { showTemplateMenu(); };
+    templatesButton.setClickingTogglesState (false);
+    templatesButton.setToggleState (true, juce::dontSendNotification);
+
+    for (auto* b : { &aButton, &bButton, &matchButton, &undoButton, &redoButton, &exportButton, &navButton, &templatesButton })
         addAndMakeVisible (b);
     startTimerHz (6);
+}
+
+void HeaderBar::loadTemplate (const juce::ValueTree& bridge, const juce::String& name)
+{
+    if (! bridge.isValid()) return;
+    ui.proc.checkpoint();
+    ui.proc.bridgeFromTree (bridge);
+    ui.proc.checkpoint();
+    ui.proc.setProjectName (name);
+    ui.select (-1);
+    if (ui.backToBridge) ui.backToBridge();
+    if (ui.onBridgeChanged) ui.onBridgeChanged();
+    if (ui.onTemplateLoaded) ui.onTemplateLoaded();
+}
+
+void HeaderBar::showTemplateMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (theme::q ("templates"));
+    const auto& fac = templates::factory();
+    juce::StringArray cats;
+    for (auto& t : fac) cats.addIfNotAlreadyThere (t.category);
+    for (int c = 0; c < cats.size(); ++c)
+    {
+        juce::PopupMenu sub;
+        for (int i = 0; i < (int) fac.size(); ++i)
+            if (fac[(size_t) i].category == cats[c])
+                sub.addItem (1000 + i, fac[(size_t) i].name);
+        m.addSubMenu (cats[c], sub);
+    }
+    m.addSeparator();
+    auto mine = templates::personal();
+    juce::PopupMenu load, del;
+    for (int i = 0; i < (int) mine.size(); ++i)
+    {
+        load.addItem (2000 + i, mine[(size_t) i].name + (mine[(size_t) i].category != "My templates" ? "  (" + mine[(size_t) i].category + ")" : juce::String()));
+        del.addItem (juce::PopupMenu::Item (mine[(size_t) i].name).setID (3000 + i).setColour (theme::danger));
+    }
+    m.addSubMenu ("My templates", load, ! mine.empty());
+    m.addItem (1, "Save this bridge as a template...");
+    m.addSubMenu ("Delete one of my templates", del, ! mine.empty());
+    m.addItem (2, "Show my templates folder");
+    m.addSeparator();
+    m.addItem (3, "Start empty (Input -> Output)");
+
+    juce::Component::SafePointer<HeaderBar> safe (this);
+    m.showMenuAsync (ui.menuOptions().withTargetComponent (&templatesButton), [safe, mine] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        if (r >= 1000 && r < 2000)
+        {
+            const auto& t = templates::factory()[(size_t) (r - 1000)];
+            safe->loadTemplate (templates::bridgeFor (t), t.name);
+        }
+        else if (r >= 2000 && r < 3000)
+        {
+            const auto& t = mine[(size_t) (r - 2000)];
+            safe->loadTemplate (templates::bridgeFor (t), t.name);
+        }
+        else if (r >= 3000)
+        {
+            const auto t = mine[(size_t) (r - 3000)];
+            juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, "Delete template",
+                "Delete \"" + t.name + "\"? It is moved to the recycle bin.", "Delete", "Cancel", nullptr,
+                juce::ModalCallbackFunction::create ([t] (int res) { if (res == 1) templates::remove (t); }));
+        }
+        else if (r == 1) safe->saveTemplateDialog();
+        else if (r == 2) { templates::folder().createDirectory(); templates::folder().startAsProcess(); }
+        else if (r == 3)
+        {
+            sonic::Graph empty;
+            empty.resetToDefault();
+            safe->loadTemplate (AtelierProcessor::graphToTree (empty), "Untitled study");
+        }
+    });
+}
+
+void HeaderBar::saveTemplateDialog()
+{
+    auto* w = new juce::AlertWindow ("Save as template", "Saves every block, wire and setting of this bridge.", juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor ("name", ui.proc.projectName(), "Name");
+    w->addTextEditor ("category", "My templates", "Category");
+    w->addTextEditor ("description", ui.proc.objective(), "Description");
+    w->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<HeaderBar> safe (this);
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w] (int res)
+    {
+        if (safe == nullptr || res != 1) return;
+        juce::String err;
+        if (! templates::save (w->getTextEditorContents ("name"), w->getTextEditorContents ("category"), w->getTextEditorContents ("description"),
+                               safe->ui.proc.bridgeToTree(), err))
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Template not saved", err);
+    }), true);
 }
 
 void HeaderBar::timerCallback()
@@ -42,31 +145,53 @@ void HeaderBar::timerCallback()
     const bool b = bypass->getValue() > 0.5f;
     aButton.setToggleState (! b, juce::dontSendNotification);
     bButton.setToggleState (b, juce::dontSendNotification);
-    matchButton.setButtonText (matchButton.getToggleState() ? "GAIN MATCH  ON" : "GAIN MATCH  OFF");
+    matchButton.setButtonText (matchButton.getToggleState() ? "MATCH  ON" : "MATCH  OFF");
     undoButton.setEnabled (ui.proc.canUndo());
     redoButton.setEnabled (ui.proc.canRedo());
     if (! study.isBeingEdited() && study.getText() != ui.proc.projectName())
         study.setText (ui.proc.projectName(), juce::dontSendNotification);
-    repaint (getLocalBounds().removeFromRight (190));
+    // navigation: where am I, and the way back
+    juce::String loc = "OVERVIEW";
+    if (ui.openEditorId >= 0)
+        if (auto* n = ui.proc.graph().node (ui.openEditorId))
+            loc = juce::String (n->name).toUpperCase();
+    const bool away = ui.openEditorId >= 0;
+    navButton.setButtonText (away ? juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90  BRIDGE")) : juce::String ("BRIDGE"));
+    navButton.getProperties().set ("colour", (int) (away ? theme::accent : theme::signalBlue).getARGB());
+    navButton.setToggleState (true, juce::dontSendNotification);
+    if (loc != location) { location = loc; repaint(); }
+    repaint (getLocalBounds().removeFromRight (176));
 }
 
 void HeaderBar::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().reduced (24, 0);
-    g.setColour (theme::beige);
+    g.setColour (theme::logo);
     g.setFont (theme::serif (40.0f));
     g.drawText ("Atelier", r.removeFromLeft (122), juce::Justification::centredLeft);
     g.setColour (theme::textDim);
     g.setFont (theme::mono (10.5f));
     g.drawText ("BY R4N", r.removeFromLeft (70).translated (0, 6), juce::Justification::centredLeft);
-    g.setColour (theme::edge);
-    g.drawVerticalLine (r.getX() + 6, 22.0f, 50.0f);
-    g.setColour (theme::textDim);
-    g.setFont (theme::mono (10.0f));
-    g.drawText (theme::q ("study"), juce::Rectangle<int> (r.getX() + 26, 14, 200, 14), juce::Justification::centredLeft);
+    // navigation pill: [BRIDGE] / location
+    {
+        auto pill = juce::Rectangle<float> (206.0f, 19.0f, 300.0f, 34.0f);
+        g.setColour (theme::panel);
+        g.fillRoundedRectangle (pill, 8.0f);
+        g.setColour (theme::edge);
+        g.drawRoundedRectangle (pill, 8.0f, 1.0f);
+        g.setFont (theme::mono (10.5f));
+        g.setColour (theme::textFaint);
+        const int x = navButton.getRight() + 8;
+        g.drawText ("/", juce::Rectangle<int> (x, 19, 10, 34), juce::Justification::centred);
+        g.setColour (ui.openEditorId >= 0 ? theme::text : theme::textDim);
+        g.drawText (location, juce::Rectangle<int> (x + 14, 19, (int) pill.getRight() - x - 22, 34), juce::Justification::centredLeft, true);
+    }
+    g.setColour (theme::textFaint);
+    g.setFont (theme::mono (9.5f));
+    g.drawText (theme::q ("study"), juce::Rectangle<int> (study.getX() + 4, 12, 120, 14), juce::Justification::centredLeft);
 
     // status (right)
-    auto s = getLocalBounds().removeFromRight (190).reduced (24, 0);
+    auto s = getLocalBounds().removeFromRight (176).reduced (20, 0);
     g.setColour (theme::textDim);
     g.setFont (theme::mono (10.5f));
     g.drawFittedText (juce::String (ui.proc.currentSampleRate() / 1000.0, 1) + " kHz  " + juce::String (ui.proc.currentBlockSize())
@@ -79,17 +204,22 @@ void HeaderBar::paint (juce::Graphics& g)
 
 void HeaderBar::resized()
 {
-    study.setBounds (240, 30, 320, 24);
-    auto r = getLocalBounds().withTrimmedRight (190).reduced (0, 20);
-    exportButton.setBounds (r.removeFromRight (190).withSizeKeepingCentre (190, 40));
-    r.removeFromRight (16);
-    redoButton.setBounds (r.removeFromRight (56).withSizeKeepingCentre (56, 32));
-    r.removeFromRight (6);
-    undoButton.setBounds (r.removeFromRight (56).withSizeKeepingCentre (56, 32));
-    r.removeFromRight (20);
-    matchButton.setBounds (r.removeFromRight (128).withSizeKeepingCentre (128, 32));
-    bButton.setBounds (r.removeFromRight (88).withSizeKeepingCentre (88, 32));
-    aButton.setBounds (r.removeFromRight (124).withSizeKeepingCentre (124, 32));
+    navButton.setBounds (210, 23, 96, 26);
+    templatesButton.setBounds (524, 22, 104, 28);
+    study.setBounds (636, 28, 250, 24);
+    auto r = getLocalBounds().withTrimmedRight (176).reduced (0, 18);
+    exportButton.setBounds (r.removeFromRight (178).withSizeKeepingCentre (178, 38));
+    r.removeFromRight (14);
+    redoButton.setBounds (r.removeFromRight (50).withSizeKeepingCentre (50, 30));
+    r.removeFromRight (4);
+    undoButton.setBounds (r.removeFromRight (50).withSizeKeepingCentre (50, 30));
+    r.removeFromRight (14);
+    matchButton.setBounds (r.removeFromRight (112).withSizeKeepingCentre (112, 30));
+    r.removeFromRight (3);
+    bButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 30));
+    r.removeFromRight (3);
+    aButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 30));
+    study.setBounds (636, 28, juce::jmax (120, aButton.getX() - 650), 24);
 }
 
 // ================================================================== SPECTRUM
@@ -187,11 +317,14 @@ void SpectrumPanel::drawCurve (juce::Graphics& g, const std::vector<float>& s, j
         a.lineTo (lastX, r.getBottom());
         a.lineTo (r.getX(), r.getBottom());
         a.closeSubPath();
-        g.setColour (c.withAlpha (0.10f));
-        g.fillPath (a);
+        theme::fadeFill (g, a, c, r.getY() + r.getHeight() * 0.25f, r.getBottom(), 0.30f);
+        theme::glowStroke (g, p, c, w);
     }
-    g.setColour (c);
-    g.strokePath (p, juce::PathStrokeType (w));
+    else
+    {
+        g.setColour (c);
+        g.strokePath (p, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
 }
 
 void SpectrumPanel::paint (juce::Graphics& g)
@@ -212,8 +345,8 @@ void SpectrumPanel::paint (juce::Graphics& g)
             g.drawText (t, a.withTrimmedLeft (24), juce::Justification::centredLeft);
         };
         if (showDiff) item ("Out - In", theme::signalBlue);
-        else { item ("Input", theme::reference.brighter (0.4f)); item ("Output", theme::signalBlue); }
-        item ("EQ curve", theme::beige);
+        else { item ("Input", theme::reference); item ("Output", theme::signalBlue); }
+        item ("EQ curve", theme::accent);
     }
 
     // grid
@@ -259,8 +392,8 @@ void SpectrumPanel::paint (juce::Graphics& g)
     }
     else
     {
-        drawCurve (g, ui.res.spectrumY, r, theme::signalBlue, 1.7f, true);
-        drawCurve (g, ui.res.spectrumX, r, theme::reference.brighter (0.4f), 1.1f, false);
+        drawCurve (g, ui.res.spectrumX, r, theme::reference, 1.1f, false);
+        drawCurve (g, ui.res.spectrumY, r, theme::signalBlue, 1.6f, true);
     }
 
     // EQ overlay
@@ -287,8 +420,7 @@ void SpectrumPanel::paint (juce::Graphics& g)
         g.setColour (theme::beige.withAlpha (0.35f));
         for (float x = r.getX(); x < r.getRight(); x += 7.0f)
             g.drawLine (x, y0, x + 3.0f, y0, 1.0f);
-        g.setColour (theme::beige);
-        g.strokePath (p, juce::PathStrokeType (1.5f));
+        theme::glowStroke (g, p, theme::accent, 1.8f);
         // band handles
         g.setFont (theme::mono (10.0f));
         for (int b = 0; b < sonic::ParametricEqModule::kMaxBands; ++b)
@@ -308,7 +440,7 @@ void SpectrumPanel::paint (juce::Graphics& g)
         g.setColour (theme::beigeText);
         g.setFont (theme::mono (9.5f));
         g.drawText ("EQ: " + juce::String (n->name).toUpperCase() + "  " + juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"))
-                        + juce::String (range, range < 2 ? 1 : 0) + " dB",
+                        + numText (range, range < 2 ? 1 : 0) + " dB",
                     getLocalBounds().removeFromBottom (28).withTrimmedRight (300).reduced (48, 0), juce::Justification::centredRight);
     }
     else

@@ -13,7 +13,7 @@ struct ModuleInfo
 {
     std::string typeId;
     std::string displayName;
-    std::string category;   // "Character", "Dynamics", "Tone", "Space", "Modulation", "Utility"
+    std::string category;   // "Character", "Dynamics", "Tone", "Space", "Modulation", "Pitch", "Utility"
     std::string summary;    // one plain-language sentence for the palette tooltip
 };
 

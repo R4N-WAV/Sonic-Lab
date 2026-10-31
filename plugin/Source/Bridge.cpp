@@ -7,16 +7,44 @@ using sonic::Graph;
 
 namespace
 {
-    constexpr int kHeader = 40;
-    constexpr int kPaletteH = 44;
-    constexpr int kIoW = 140, kIoH = 140;
+    constexpr int kHeader = 42;
+    constexpr int kPaletteH = 46;
+    constexpr float kIoW = 140.0f, kIoH = 128.0f;
+    constexpr float kMidY = 180.0f;         // world y of the main signal line
+    constexpr float kInputX = 16.0f;
+    constexpr float kMinZoom = 0.35f, kMaxZoom = 2.0f;
 
-    juce::String typeLabel (const std::string& type)
+    const sonic::ModuleInfo* infoFor (const std::string& type)
     {
         for (auto& m : sonic::availableModules())
             if (m.typeId == type)
-                return juce::String (m.displayName).toUpperCase();
+                return &m;
+        return nullptr;
+    }
+
+    juce::String typeLabel (const std::string& type)
+    {
+        if (auto* i = infoFor (type)) return juce::String (i->displayName).toUpperCase();
         return juce::String (type).toUpperCase();
+    }
+
+    juce::PopupMenu::Item withKey (juce::PopupMenu::Item i, const juce::String& key)
+    {
+        i.shortcutKeyDescription = key;
+        return i;
+    }
+
+    juce::String stageText (sonic::Graph& g, int id)
+    {
+        const auto order = g.activeOrder();
+        const auto it = std::find (order.begin(), order.end(), id);
+        return it == order.end() ? juce::String ("--") : juce::String ((int) (it - order.begin()) + 1).paddedLeft ('0', 2);
+    }
+
+    juce::Colour typeColour (const std::string& type)
+    {
+        if (auto* i = infoFor (type)) return theme::categoryColour (i->category);
+        return theme::textDim;
     }
 }
 
@@ -26,22 +54,30 @@ BridgePanel::Palette::Palette (BridgePanel& o) : owner (o)
 {
     for (auto& m : sonic::availableModules())
     {
-        auto* b = chips.add (new juce::TextButton (juce::String (m.displayName)));
+        juce::String label (m.displayName);
+        if (m.typeId == "tube.stage") label = "Tube";
+        else if (m.typeId == "tone.eq") label = "EQ";
+        else if (m.typeId == "dynamics.compressor") label = "Comp";
+        else if (m.typeId == "character.transformer") label = "Iron";
+        else if (m.typeId == "character.saturation") label = "Saturate";
+        auto* b = chips.add (new juce::TextButton (label));
         b->setTooltip (juce::String (m.displayName) + " - " + juce::String (m.summary)
                        + "\nClick: add to the end of the main path. Drag: place it, or drop it onto a line to insert it there.");
         const std::string type = m.typeId;
         b->onClick = [this, type] { owner.addBlock (type); };
         b->addMouseListener (this, false);
         b->getProperties().set ("type", juce::String (type));
+        b->getProperties().set ("chip", true);
+        b->getProperties().set ("dot", (int) theme::categoryColour (m.category).getARGB());
         addAndMakeVisible (b);
     }
 }
 
 void BridgePanel::Palette::paint (juce::Graphics& g)
 {
-    g.setColour (theme::textDim);
+    g.setColour (theme::textFaint);
     g.setFont (theme::mono (10.0f));
-    g.drawText ("+ ADD BLOCK", getLocalBounds().withWidth (96), juce::Justification::centredLeft);
+    g.drawText ("+ ADD", getLocalBounds().withWidth (48), juce::Justification::centredLeft);
 }
 
 void BridgePanel::Palette::mouseDrag (const juce::MouseEvent& e)
@@ -50,7 +86,9 @@ void BridgePanel::Palette::mouseDrag (const juce::MouseEvent& e)
         return;
     dragging = true;
     owner.pendingType = e.eventComponent->getProperties()["type"].toString();
-    owner.dragNow = e.getEventRelativeTo (&owner).position;
+    owner.nowScreen = e.getEventRelativeTo (&owner).position;
+    owner.nowWorld = owner.toWorld (owner.nowScreen);
+    owner.hoverWire = owner.nearestWire (owner.nowWorld, 16.0f);
     owner.setMouseCursor (juce::MouseCursor::DraggingHandCursor);
     owner.repaint();
 }
@@ -63,6 +101,7 @@ void BridgePanel::Palette::mouseUp (const juce::MouseEvent& e)
     const auto p = e.getEventRelativeTo (&owner).position;
     const auto type = owner.pendingType.toStdString();
     owner.pendingType.clear();
+    owner.hoverWire = { -1, -1 };
     owner.setMouseCursor (juce::MouseCursor::NormalCursor);
     if (owner.canvas().contains (p))
         owner.addBlockAt (type, p);
@@ -71,13 +110,13 @@ void BridgePanel::Palette::mouseUp (const juce::MouseEvent& e)
 
 void BridgePanel::Palette::resized()
 {
-    auto r = getLocalBounds().withTrimmedLeft (100);
+    auto r = getLocalBounds().withTrimmedLeft (52);
     int x = r.getX();
     for (auto* b : chips)
     {
-        const int w = juce::GlyphArrangement::getStringWidthInt (theme::mono (11.0f), b->getButtonText()) + 20;
-        b->setBounds (x, r.getCentreY() - 13, w, 26);
-        x += w + 5;
+        const int w = juce::GlyphArrangement::getStringWidthInt (theme::sans (12.0f), b->getButtonText()) + 28;
+        b->setBounds (x, r.getCentreY() - 14, w, 28);
+        x += w + 4;
     }
 }
 
@@ -86,28 +125,70 @@ void BridgePanel::Palette::resized()
 BridgePanel::BridgePanel (Ui& u) : ui (u)
 {
     addAndMakeVisible (palette);
+    for (auto* b : { &zoomOut, &zoomIn, &fitButton, &tidyButton })
+    {
+        b->getProperties().set ("small", true);
+        addAndMakeVisible (b);
+    }
+    zoomOut.setTooltip ("Zoom out (or scroll / pinch on the canvas).");
+    zoomIn.setTooltip ("Zoom in.");
+    fitButton.setTooltip ("Fit every block into view (F).");
+    tidyButton.setTooltip ("Arrange the blocks left-to-right in signal order.");
+    zoomOut.onClick = [this] { setZoom (zoom / 1.2f, canvas().getCentre()); };
+    zoomIn.onClick = [this] { setZoom (zoom * 1.2f, canvas().getCentre()); };
+    fitButton.onClick = [this] { fitView(); };
+    tidyButton.onClick = [this] { tidyLayout(); };
     setWantsKeyboardFocus (true);
     startTimerHz (15);
 }
 
 void BridgePanel::resized()
 {
-    palette.setBounds (getLocalBounds().removeFromBottom (kPaletteH).reduced (16, 6));
-    // keep blocks inside the canvas after a resize
+    palette.setBounds (getLocalBounds().removeFromBottom (kPaletteH).reduced (14, 6));
+    auto h = getLocalBounds().removeFromTop (kHeader).reduced (12, 8);
+    tidyButton.setBounds (h.removeFromRight (52));
+    h.removeFromRight (10);
+    fitButton.setBounds (h.removeFromRight (42));
+    h.removeFromRight (4);
+    zoomIn.setBounds (h.removeFromRight (26));
+    h.removeFromRight (48);   // zoom % is painted here
+    zoomOut.setBounds (h.removeFromRight (26));
+    if (! fittedOnce && getWidth() > 0)
+    {
+        fittedOnce = true;
+        fitView();
+    }
 }
 
 juce::Rectangle<float> BridgePanel::canvas() const
 {
-    return getLocalBounds().toFloat().withTrimmedTop ((float) kHeader).withTrimmedBottom ((float) kPaletteH);
+    return getLocalBounds().toFloat().withTrimmedTop ((float) kHeader).withTrimmedBottom ((float) kPaletteH).reduced (1.0f, 0.0f);
+}
+
+juce::AffineTransform BridgePanel::view() const
+{
+    const auto c = canvas();
+    return juce::AffineTransform::translation (-pan.x, -pan.y).scaled (zoom).translated (c.getX(), c.getY());
+}
+
+juce::Point<float> BridgePanel::toWorld (juce::Point<float> s) const
+{
+    return s.transformedBy (view().inverted());
 }
 
 juce::Rectangle<float> BridgePanel::cardRect (int id) const
 {
-    const auto c = canvas();
     if (id == Graph::kInputId)
-        return { 16.0f, c.getCentreY() - kIoH * 0.5f, (float) kIoW, (float) kIoH };
+        return { kInputX, kMidY - kIoH * 0.5f, kIoW, kIoH };
     if (id == Graph::kOutputId)
-        return { c.getRight() - 16.0f - kIoW, c.getCentreY() - kIoH * 0.5f, (float) kIoW, (float) kIoH };
+    {
+        // Output sits to the right of the right-most block (and never closer than the default spot)
+        float right = 1064.0f;
+        for (int n : ui.proc.graph().nodeIds())
+            if (auto* nd = ui.proc.graph().node (n))
+                right = juce::jmax (right, nd->x + (float) kCardW + 70.0f);
+        return { right, kMidY - kIoH * 0.5f, kIoW, kIoH };
+    }
     if (auto* n = ui.proc.graph().node (id))
         return { n->x, n->y, (float) kCardW, (float) kCardH };
     return {};
@@ -123,6 +204,49 @@ juce::Point<float> BridgePanel::outPort (int id) const
 {
     const auto r = cardRect (id);
     return { r.getRight(), r.getCentreY() };
+}
+
+juce::Rectangle<float> BridgePanel::contentBounds() const
+{
+    auto b = cardRect (Graph::kInputId).getUnion (cardRect (Graph::kOutputId));
+    for (int id : ui.proc.graph().nodeIds())
+        b = b.getUnion (cardRect (id));
+    return b.expanded (24.0f, 30.0f);
+}
+
+void BridgePanel::setZoom (float z, juce::Point<float> anchor)
+{
+    const auto before = toWorld (anchor);
+    zoom = juce::jlimit (kMinZoom, kMaxZoom, z);
+    const auto c = canvas();
+    pan = before - (anchor - c.getPosition()) / zoom;
+    repaint();
+}
+
+void BridgePanel::fitView()
+{
+    const auto c = canvas();
+    if (c.isEmpty()) return;
+    const auto b = contentBounds();
+    zoom = juce::jlimit (kMinZoom, 1.0f, juce::jmin (c.getWidth() / b.getWidth(), c.getHeight() / b.getHeight()));
+    pan = { b.getCentreX() - c.getWidth() * 0.5f / zoom, b.getCentreY() - c.getHeight() * 0.5f / zoom };
+    repaint();
+}
+
+void BridgePanel::ensureVisible (int id)
+{
+    const auto c = canvas();
+    const auto r = cardRect (id).transformedBy (view());
+    if (c.reduced (10.0f).contains (r))
+        return;
+    if (contentBounds().getWidth() * zoom > c.getWidth() || contentBounds().getHeight() * zoom > c.getHeight())
+        fitView();
+    else
+    {
+        const auto w = cardRect (id).getCentre();
+        pan = { w.x - c.getWidth() * 0.5f / zoom, w.y - c.getHeight() * 0.5f / zoom };
+        repaint();
+    }
 }
 
 juce::Path BridgePanel::wirePath (juce::Point<float> a, juce::Point<float> b) const
@@ -142,12 +266,13 @@ float BridgePanel::wireDistance (const Graph::Edge& e, juce::Point<float> p) con
     return nearest.getDistanceFrom (p);
 }
 
-Graph::Edge BridgePanel::nearestWire (juce::Point<float> p, float maxDist) const
+Graph::Edge BridgePanel::nearestWire (juce::Point<float> p, float maxScreenDist, int ignoreNode) const
 {
     Graph::Edge best { -1, -1 };
-    float bestD = maxDist;
+    float bestD = maxScreenDist / zoom;
     for (auto& e : ui.proc.graph().edges())
     {
+        if (e.from == ignoreNode || e.to == ignoreNode) continue;
         const float d = wireDistance (e, p);
         if (d < bestD)
         {
@@ -165,11 +290,12 @@ BridgePanel::Hit BridgePanel::hitTest (juce::Point<float> p) const
     auto ids = g.nodeIds();
     ids.push_back (Graph::kInputId);
     ids.push_back (Graph::kOutputId);
+    const float portR = 11.0f / juce::jmin (1.0f, zoom);
     for (auto it = ids.rbegin(); it != ids.rend(); ++it)
     {
         const int id = *it;
-        if (id != Graph::kOutputId && outPort (id).getDistanceFrom (p) < 10.0f) { h.kind = Hit::outPort; h.id = id; return h; }
-        if (id != Graph::kInputId && inPort (id).getDistanceFrom (p) < 10.0f) { h.kind = Hit::inPort; h.id = id; return h; }
+        if (id != Graph::kOutputId && outPort (id).getDistanceFrom (p) < portR) { h.kind = Hit::outPort; h.id = id; return h; }
+        if (id != Graph::kInputId && inPort (id).getDistanceFrom (p) < portR) { h.kind = Hit::inPort; h.id = id; return h; }
     }
     for (auto it = ids.rbegin(); it != ids.rend(); ++it)
     {
@@ -181,12 +307,12 @@ BridgePanel::Hit BridgePanel::hitTest (juce::Point<float> p) const
         h.kind = Hit::node;
         if (id >= 2)
         {
-            if (juce::Rectangle<float> (r.getRight() - 22, r.getY() + 6, 16, 16).contains (p)) h.kind = Hit::enableDot;
+            if (juce::Rectangle<float> (r.getRight() - 24, r.getY() + 4, 20, 20).contains (p)) h.kind = Hit::enableDot;
             else if (juce::Rectangle<float> (r.getX() + 8, r.getBottom() - 36, 30, 30).contains (p)) h.kind = Hit::mixRing;
         }
         return h;
     }
-    const auto e = nearestWire (p, 6.0f);
+    const auto e = nearestWire (p, 7.0f);
     if (e.from >= 0)
     {
         h.kind = Hit::wire;
@@ -195,24 +321,19 @@ BridgePanel::Hit BridgePanel::hitTest (juce::Point<float> p) const
     return h;
 }
 
-juce::Point<float> BridgePanel::freeSpot (juce::Point<float> want) const
+juce::Point<float> BridgePanel::freeSpot (juce::Point<float> want, int ignore) const
 {
-    auto c = canvas().reduced (8.0f);
-    want.x = juce::jlimit (c.getX() + kIoW + 30.0f, c.getRight() - kIoW - 30.0f - kCardW, want.x);
-    want.y = juce::jlimit (c.getY(), c.getBottom() - kCardH, want.y);
-    for (int attempt = 0; attempt < 12; ++attempt)
+    for (int attempt = 0; attempt < 24; ++attempt)
     {
         bool clash = false;
+        const juce::Rectangle<float> r (want.x, want.y, (float) kCardW, (float) kCardH);
         for (int id : ui.proc.graph().nodeIds())
-            if (cardRect (id).expanded (8.0f).intersects (juce::Rectangle<float> (want.x, want.y, (float) kCardW, (float) kCardH)))
+            if (id != ignore && cardRect (id).expanded (10.0f).intersects (r))
                 clash = true;
+        if (cardRect (Graph::kInputId).expanded (10.0f).intersects (r)) clash = true;
         if (! clash) break;
-        want.y += kCardH + 14.0f;
-        if (want.y + kCardH > c.getBottom())
-        {
-            want.y = c.getY();
-            want.x += 40.0f;
-        }
+        // try below, then above, alternating outward
+        want.y += (attempt % 2 == 0 ? 1.0f : -1.0f) * (kCardH + 18.0f) * (float) (attempt + 1);
     }
     return want;
 }
@@ -227,6 +348,57 @@ void BridgePanel::changed (bool structural)
     repaint();
 }
 
+void BridgePanel::showFlash (const juce::String& text)
+{
+    flash = text;
+    flashTicks = 45;
+    repaint();
+}
+
+bool BridgePanel::isConnected (int id) const
+{
+    for (auto& e : ui.proc.graph().edges())
+        if (e.from == id || e.to == id)
+            return true;
+    return false;
+}
+
+void BridgePanel::detachAndHeal (int id)
+{
+    auto& g = ui.proc.graph();
+    std::vector<int> ins, outs;
+    for (auto& e : g.edges())
+    {
+        if (e.to == id) ins.push_back (e.from);
+        if (e.from == id) outs.push_back (e.to);
+    }
+    for (int a : ins) g.disconnect (a, id);
+    for (int b : outs) g.disconnect (id, b);
+    for (int a : ins)
+        for (int b : outs)
+            g.connect (a, b);   // silently skips duplicates
+}
+
+void BridgePanel::removeAndHeal (int id)
+{
+    detachAndHeal (id);
+    ui.proc.graph().removeNode (id);
+}
+
+void BridgePanel::insertIntoWire (int id, Graph::Edge e)
+{
+    auto& g = ui.proc.graph();
+    if (e.from < 0 || e.from == id || e.to == id) return;
+    g.disconnect (e.from, e.to);
+    if (! g.connect (e.from, id) || ! g.connect (id, e.to))
+    {
+        g.disconnect (e.from, id);
+        g.disconnect (id, e.to);
+        g.connect (e.from, e.to);
+        showFlash ("That would create a loop - feedback loops are not allowed.");
+    }
+}
+
 void BridgePanel::addBlock (const std::string& type)
 {
     auto& g = ui.proc.graph();
@@ -236,16 +408,11 @@ void BridgePanel::addBlock (const std::string& type)
         if (e.to == Graph::kOutputId)
             intoOut.push_back (e);
 
-    juce::Point<float> pos { canvas().getCentreX() - kCardW * 0.5f, canvas().getCentreY() - kCardH * 0.5f };
+    juce::Point<float> pos { 220.0f, kMidY - kCardH * 0.5f };
     if (intoOut.size() == 1)
     {
         const auto a = outPort (intoOut[0].from);
-        pos = { a.x + 50.0f, a.y - kCardH * 0.5f };
-        if (pos.x + kCardW > cardRect (Graph::kOutputId).getX() - 30.0f)
-        {
-            // make room: shift everything left of Output a bit, and place at the right end
-            pos.x = cardRect (Graph::kOutputId).getX() - 30.0f - kCardW;
-        }
+        pos = { a.x + 44.0f, a.y - kCardH * 0.5f };
     }
     pos = freeSpot (pos);
     const int id = g.addNode (type, pos.x, pos.y);
@@ -264,25 +431,73 @@ void BridgePanel::addBlock (const std::string& type)
     }
     ui.select (id);
     changed (true);
+    ensureVisible (Graph::kOutputId);
 }
 
-void BridgePanel::addBlockAt (const std::string& type, juce::Point<float> pos)
+void BridgePanel::addBlockAt (const std::string& type, juce::Point<float> screen)
 {
     auto& g = ui.proc.graph();
-    const auto wire = nearestWire (pos, 14.0f);
-    const auto spot = freeSpot ({ pos.x - kCardW * 0.5f, pos.y - kCardH * 0.5f });
+    const auto w = toWorld (screen);
+    const auto wire = nearestWire (w, 16.0f);
+    const auto spot = freeSpot ({ w.x - kCardW * 0.5f, w.y - kCardH * 0.5f });
     const int id = g.addNode (type, spot.x, spot.y);
     if (id < 0)
         return;
     if (wire.from >= 0)
-    {
-        g.disconnect (wire.from, wire.to);
-        g.connect (wire.from, id);
-        g.connect (id, wire.to);
-    }
+        insertIntoWire (id, wire);
     ui.select (id);
     changed (true);
 }
+
+void BridgePanel::duplicate (int id)
+{
+    auto& gr = ui.proc.graph();
+    auto* node = gr.node (id);
+    if (node == nullptr) return;
+    const auto spot = freeSpot ({ node->x + 24.0f, node->y + kCardH + 18.0f });
+    const int copy = gr.addNode (node->type, spot.x, spot.y);
+    if (auto* c = gr.node (copy))
+    {
+        for (int i = 0; i < node->module->numParams(); ++i)
+            c->module->setParam (i, node->module->getParam (i));
+        c->mix = node->mix.load();
+        c->outGainDb = node->outGainDb.load();
+        c->name = node->name + " copy";
+        ui.select (copy);
+    }
+    changed (true);
+}
+
+void BridgePanel::tidyLayout()
+{
+    auto& g = ui.proc.graph();
+    const auto ids = g.nodeIds();
+    const auto edges = g.edges();
+    // depth = longest path from Input (blocks with no path get their own column at the end)
+    std::map<int, int> depth;
+    depth[Graph::kInputId] = 0;
+    for (size_t pass = 0; pass < ids.size() + 2; ++pass)
+        for (auto& e : edges)
+            if (depth.count (e.from) && e.to != Graph::kOutputId)
+                depth[e.to] = juce::jmax (depth.count (e.to) ? depth[e.to] : 0, depth[e.from] + 1);
+    int maxDepth = 0;
+    for (auto& [id, d] : depth) maxDepth = juce::jmax (maxDepth, d);
+    std::map<int, std::vector<int>> columns;
+    for (int id : ids)
+        columns[depth.count (id) ? depth[id] : maxDepth + 1].push_back (id);
+    for (auto& [col, members] : columns)
+    {
+        const float x = 210.0f + (float) (col - 1) * ((float) kCardW + 56.0f);
+        const float total = (float) members.size() * (kCardH + 22.0f) - 22.0f;
+        float y = kMidY - total * 0.5f;
+        for (int id : members)
+            if (auto* n = g.node (id)) { n->x = x; n->y = y; y += kCardH + 22.0f; }
+    }
+    changed (false);
+    fitView();
+}
+
+// ------------------------------------------------------------------ menus
 
 void BridgePanel::showNodeMenu (int id)
 {
@@ -290,16 +505,28 @@ void BridgePanel::showNodeMenu (int id)
     auto* n = g.node (id);
     if (n == nullptr)
         return;
-    juce::PopupMenu m;
     const bool hasEditor = n->type == "tone.eq" || n->type == "character.saturation";
-    m.addItem (1, hasEditor ? "Open editor" : "Show advanced controls");
-    m.addItem (2, "Rename...");
-    m.addItem (3, "Duplicate");
-    m.addItem (4, n->enabled.load() ? "Bypass" : "Enable");
+    const bool connected = isConnected (id);
+    bool hasIn = false, hasOut = false;
+    for (auto& e : g.edges()) { hasIn |= e.to == id; hasOut |= e.from == id; }
+
+    juce::PopupMenu m;
+    m.addSectionHeader (stageText (g, id) + "  " + theme::q (typeLabel (n->type).toLowerCase()));
+    m.addItem (withKey (juce::PopupMenu::Item (hasEditor ? "Open editor" : "Show all controls").setID (1), "Double-click"));
+    m.addItem (withKey (juce::PopupMenu::Item (n->enabled.load() ? "Bypass" : "Enable").setID (4), "B"));
+    m.addItem (withKey (juce::PopupMenu::Item ("Duplicate").setID (3), "Ctrl D"));
+    m.addItem (juce::PopupMenu::Item ("Rename...").setID (2));
     m.addSeparator();
-    m.addItem (5, "Remove");
+    m.addItem (withKey (juce::PopupMenu::Item ("Pull out of the chain").setID (10).setEnabled (connected), "Shift-drag"));
+    m.addItem (juce::PopupMenu::Item ("Disconnect inputs").setID (11).setEnabled (hasIn));
+    m.addItem (juce::PopupMenu::Item ("Disconnect outputs").setID (12).setEnabled (hasOut));
+    m.addItem (juce::PopupMenu::Item ("Send to Output too (parallel)").setID (13).setEnabled (! g.wouldCreateCycle (id, Graph::kOutputId)));
+    m.addItem (juce::PopupMenu::Item ("Feed from Input too (parallel)").setID (14).setEnabled (! g.wouldCreateCycle (Graph::kInputId, id)));
+    m.addSeparator();
+    m.addItem (withKey (juce::PopupMenu::Item ("Remove").setID (5).setColour (theme::danger), "Del"));
+
     juce::Component::SafePointer<BridgePanel> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options(), [safe, id] (int r)
+    m.showMenuAsync (ui.menuOptions(), [safe, id] (int r)
     {
         if (safe == nullptr || r == 0) return;
         auto& ui = safe->ui;
@@ -326,28 +553,90 @@ void BridgePanel::showNodeMenu (int id)
                 }), true);
                 break;
             }
-            case 3:
-            {
-                const int copy = gr.addNode (node->type, node->x + 24, node->y + 24);
-                if (auto* c = gr.node (copy))
-                {
-                    for (int i = 0; i < node->module->numParams(); ++i)
-                        c->module->setParam (i, node->module->getParam (i));
-                    c->mix = node->mix.load();
-                    c->outGainDb = node->outGainDb.load();
-                    c->name = node->name + " copy";
-                    ui.select (copy);
-                }
-                safe->changed (true);
-                break;
-            }
+            case 3: safe->duplicate (id); break;
             case 4: node->enabled = ! node->enabled.load(); safe->changed (false); break;
-            case 5:
-                gr.removeNode (id);
-                ui.select (-1);
-                safe->changed (true);
-                break;
+            case 5: safe->removeAndHeal (id); ui.select (-1); safe->changed (true); break;
+            case 10: safe->detachAndHeal (id); safe->changed (true); break;
+            case 11: for (auto& e : gr.edges()) if (e.to == id) gr.disconnect (e.from, id); safe->changed (true); break;
+            case 12: for (auto& e : gr.edges()) if (e.from == id) gr.disconnect (id, e.to); safe->changed (true); break;
+            case 13: gr.connect (id, Graph::kOutputId); safe->changed (true); break;
+            case 14: gr.connect (Graph::kInputId, id); safe->changed (true); break;
             default: break;
+        }
+    });
+}
+
+void BridgePanel::showWireMenu (Graph::Edge e)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (theme::q ("connection"));
+    juce::PopupMenu insert;
+    std::string lastCat;
+    int idx = 0;
+    for (auto& info : sonic::availableModules())
+    {
+        if (info.category != lastCat && ! lastCat.empty()) insert.addSeparator();
+        lastCat = info.category;
+        insert.addItem (juce::PopupMenu::Item (juce::String (info.displayName)).setID (100 + idx++).setColour (theme::categoryColour (info.category)));
+    }
+    m.addSubMenu ("Insert a block here", insert);
+    m.addSeparator();
+    m.addItem (withKey (juce::PopupMenu::Item ("Remove connection").setID (1).setColour (theme::danger), "Del"));
+    juce::Component::SafePointer<BridgePanel> safe (this);
+    m.showMenuAsync (ui.menuOptions(), [safe, e] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto& g = safe->ui.proc.graph();
+        if (r == 1)
+        {
+            g.disconnect (e.from, e.to);
+            safe->changed (true);
+        }
+        else if (r >= 100)
+        {
+            const auto& info = sonic::availableModules()[(size_t) (r - 100)];
+            const auto a = safe->outPort (e.from), b = safe->inPort (e.to);
+            const auto spot = safe->freeSpot ({ (a.x + b.x) * 0.5f - kCardW * 0.5f, (a.y + b.y) * 0.5f - kCardH * 0.5f });
+            const int id = g.addNode (info.typeId, spot.x, spot.y);
+            if (id >= 0)
+            {
+                safe->insertIntoWire (id, e);
+                safe->ui.select (id);
+                safe->changed (true);
+            }
+        }
+    });
+}
+
+void BridgePanel::showCanvasMenu (juce::Point<float> world)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (theme::q ("bridge"));
+    juce::PopupMenu add;
+    std::string lastCat;
+    int idx = 0;
+    for (auto& info : sonic::availableModules())
+    {
+        if (info.category != lastCat && ! lastCat.empty()) add.addSeparator();
+        lastCat = info.category;
+        add.addItem (juce::PopupMenu::Item (juce::String (info.displayName)).setID (100 + idx++).setColour (theme::categoryColour (info.category)));
+    }
+    m.addSubMenu ("Add a block here", add);
+    m.addSeparator();
+    m.addItem (withKey (juce::PopupMenu::Item ("Fit view").setID (1), "F"));
+    m.addItem (juce::PopupMenu::Item ("Tidy layout").setID (2));
+    m.addItem (withKey (juce::PopupMenu::Item ("Reset zoom to 100 %").setID (3), "Ctrl 0"));
+    juce::Component::SafePointer<BridgePanel> safe (this);
+    m.showMenuAsync (ui.menuOptions(), [safe, world] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        if (r == 1) safe->fitView();
+        else if (r == 2) safe->tidyLayout();
+        else if (r == 3) safe->setZoom (1.0f, safe->canvas().getCentre());
+        else if (r >= 100)
+        {
+            const auto& info = sonic::availableModules()[(size_t) (r - 100)];
+            safe->addBlockAt (info.typeId, world.transformedBy (safe->view()));
         }
     });
 }
@@ -357,66 +646,78 @@ void BridgePanel::showNodeMenu (int id)
 void BridgePanel::mouseDown (const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
-    const auto p = e.position;
-    drag = hitTest (p);
-    dragStart = dragNow = p;
+    pressScreen = nowScreen = e.position;
+    nowWorld = toWorld (e.position);
     moved = false;
+    dragMode = Drag::none;
+    if (! canvas().contains (e.position))
+        return;
+    pressed = hitTest (nowWorld);
 
     if (e.mods.isPopupMenu())
     {
-        if (drag.kind == Hit::wire)
-        {
-            juce::PopupMenu m;
-            m.addItem (1, "Remove connection");
-            const auto edge = drag.edge;
-            juce::Component::SafePointer<BridgePanel> safe (this);
-            m.showMenuAsync ({}, [safe, edge] (int r)
-            {
-                if (safe != nullptr && r == 1)
-                {
-                    safe->ui.proc.graph().disconnect (edge.from, edge.to);
-                    safe->changed (true);
-                }
-            });
-        }
-        else if (drag.kind == Hit::node || drag.kind == Hit::mixRing || drag.kind == Hit::enableDot)
-        {
-            if (drag.id >= 2) { ui.select (drag.id); showNodeMenu (drag.id); }
-        }
-        drag = {};
+        if (pressed.kind == Hit::wire) { selectedWire = pressed.edge; showWireMenu (pressed.edge); }
+        else if (pressed.id >= 2 && pressed.kind != Hit::wire) { ui.select (pressed.id); showNodeMenu (pressed.id); }
+        else if (pressed.kind == Hit::none) showCanvasMenu (nowWorld);
+        pressed = {};
+        repaint();
+        return;
+    }
+    if (e.mods.isMiddleButtonDown())
+    {
+        dragMode = Drag::pan;
+        panStart = pan;
         return;
     }
 
     selectedWire = { -1, -1 };
-    switch (drag.kind)
+    switch (pressed.kind)
     {
         case Hit::node:
         case Hit::mixRing:
-            ui.select (drag.id);
-            if (auto* n = ui.proc.graph().node (drag.id))
+            ui.select (pressed.id);
+            if (auto* n = ui.proc.graph().node (pressed.id))
             {
                 nodeStart = { n->x, n->y };
                 mixStart = n->mix.load();
+                dragMode = pressed.kind == Hit::mixRing ? Drag::mixRing : Drag::moveNode;
             }
             break;
         case Hit::enableDot:
-            if (auto* n = ui.proc.graph().node (drag.id))
+            if (auto* n = ui.proc.graph().node (pressed.id))
             {
                 n->enabled = ! n->enabled.load();
                 changed (false);
             }
-            drag = {};
             break;
         case Hit::wire:
-            selectedWire = drag.edge;
-            drag = {};
+            selectedWire = pressed.edge;
             break;
         case Hit::outPort:
-        case Hit::inPort:
+            dragMode = Drag::newWireFromOut;
             break;
+        case Hit::inPort:
+        {
+            // grabbing the end of an existing wire re-routes it; an empty input starts a new wire backwards
+            Graph::Edge grab { -1, -1 };
+            for (auto& ed : ui.proc.graph().edges())
+                if (ed.to == pressed.id) grab = ed;
+            if (grab.from >= 0 && ! e.mods.isAltDown())
+            {
+                dragMode = Drag::rewire;
+                rewireFrom = grab.from;
+                rewireOriginal = grab;
+                ui.proc.graph().disconnect (grab.from, grab.to);
+            }
+            else
+                dragMode = Drag::newWireFromIn;
+            break;
+        }
         case Hit::none:
         default:
             ui.select (-1);
+            dragMode = Drag::pan;
+            panStart = pan;
             break;
     }
     repaint();
@@ -424,22 +725,31 @@ void BridgePanel::mouseDown (const juce::MouseEvent& e)
 
 void BridgePanel::mouseDrag (const juce::MouseEvent& e)
 {
-    dragNow = e.position;
-    if (dragNow.getDistanceFrom (dragStart) > 3.0f)
+    nowScreen = e.position;
+    nowWorld = toWorld (e.position);
+    if (nowScreen.getDistanceFrom (pressScreen) > 3.0f)
         moved = true;
-    if (drag.kind == Hit::node && drag.id >= 2)
+    switch (dragMode)
     {
-        if (auto* n = ui.proc.graph().node (drag.id))
-        {
-            const auto c = canvas();
-            n->x = juce::jlimit (c.getX(), c.getRight() - kCardW, nodeStart.x + dragNow.x - dragStart.x);
-            n->y = juce::jlimit (c.getY(), c.getBottom() - kCardH, nodeStart.y + dragNow.y - dragStart.y);
-        }
-    }
-    else if (drag.kind == Hit::mixRing)
-    {
-        if (auto* n = ui.proc.graph().node (drag.id))
-            n->mix = juce::jlimit (0.0f, 1.0f, mixStart - (dragNow.y - dragStart.y) / 150.0f);
+        case Drag::pan:
+            pan = panStart - (nowScreen - pressScreen) / zoom;
+            setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+            break;
+        case Drag::moveNode:
+            if (auto* n = ui.proc.graph().node (pressed.id))
+            {
+                n->x = nodeStart.x + (nowScreen.x - pressScreen.x) / zoom;
+                n->y = nodeStart.y + (nowScreen.y - pressScreen.y) / zoom;
+                // an unconnected block (or Shift = pulled out) can be dropped onto a wire
+                const bool canInsert = ! isConnected (pressed.id) || e.mods.isShiftDown();
+                hoverWire = canInsert ? nearestWire (cardRect (pressed.id).getCentre(), 18.0f, pressed.id) : Graph::Edge { -1, -1 };
+            }
+            break;
+        case Drag::mixRing:
+            if (auto* n = ui.proc.graph().node (pressed.id))
+                n->mix = juce::jlimit (0.0f, 1.0f, mixStart - (nowScreen.y - pressScreen.y) / 150.0f);
+            break;
+        default: break;
     }
     repaint();
 }
@@ -447,43 +757,93 @@ void BridgePanel::mouseDrag (const juce::MouseEvent& e)
 void BridgePanel::mouseUp (const juce::MouseEvent& e)
 {
     auto& g = ui.proc.graph();
-    if (drag.kind == Hit::outPort || drag.kind == Hit::inPort)
+    const auto target = hitTest (toWorld (e.position));
+    auto targetIsBlock = [&] { return target.kind == Hit::node || target.kind == Hit::mixRing || target.kind == Hit::enableDot; };
+
+    switch (dragMode)
     {
-        auto target = hitTest (e.position);
-        int from = -1, to = -1;
-        if (drag.kind == Hit::outPort)
+        case Drag::newWireFromOut:
+        case Drag::newWireFromIn:
         {
-            from = drag.id;
-            if (target.kind == Hit::inPort || target.kind == Hit::node || target.kind == Hit::mixRing || target.kind == Hit::enableDot)
-                to = target.id;
-        }
-        else
-        {
-            to = drag.id;
-            if (target.kind == Hit::outPort || target.kind == Hit::node || target.kind == Hit::mixRing || target.kind == Hit::enableDot)
-                from = target.id;
-        }
-        if (from >= 0 && to >= 0 && from != to)
-        {
-            if (g.connect (from, to))
-                changed (true);
+            int from = -1, to = -1;
+            if (dragMode == Drag::newWireFromOut)
+            {
+                from = pressed.id;
+                if (target.kind == Hit::inPort || targetIsBlock()) to = target.id;
+            }
             else
             {
-                flash = g.wouldCreateCycle (from, to) ? "That connection would create a loop - feedback loops are not allowed."
-                                                      : "Those blocks are already connected.";
-                flashTicks = 45;
+                to = pressed.id;
+                if (target.kind == Hit::outPort || targetIsBlock()) from = target.id;
             }
+            if (from >= 0 && to >= 0 && from != to && from != Graph::kOutputId && to != Graph::kInputId)
+            {
+                if (g.connect (from, to)) changed (true);
+                else showFlash (g.wouldCreateCycle (from, to) ? "That connection would create a loop - feedback loops are not allowed."
+                                                              : "Those blocks are already connected.");
+            }
+            break;
         }
+        case Drag::rewire:
+        {
+            int to = -1;
+            if (target.kind == Hit::inPort || targetIsBlock()) to = target.id;
+            if (to == rewireOriginal.to || ! moved)
+                g.connect (rewireOriginal.from, rewireOriginal.to);           // dropped back: nothing changes
+            else if (to >= 0 && to != Graph::kInputId && to != rewireFrom)
+            {
+                if (g.connect (rewireFrom, to)) changed (true);
+                else
+                {
+                    g.connect (rewireOriginal.from, rewireOriginal.to);
+                    showFlash (g.wouldCreateCycle (rewireFrom, to) ? "That would create a loop - feedback loops are not allowed."
+                                                                   : "Those blocks are already connected.");
+                }
+            }
+            else
+            {
+                changed (true);                                               // dropped on empty space: disconnected
+                showFlash ("Connection removed. Undo (Ctrl Z) brings it back.");
+            }
+            rewireFrom = -1;
+            break;
+        }
+        case Drag::moveNode:
+            if (moved)
+            {
+                const int id = pressed.id;
+                if (e.mods.isShiftDown() && isConnected (id))
+                {
+                    detachAndHeal (id);
+                    if (hoverWire.from >= 0) insertIntoWire (id, hoverWire);
+                    changed (true);
+                }
+                else if (hoverWire.from >= 0)
+                {
+                    insertIntoWire (id, hoverWire);
+                    changed (true);
+                }
+                else
+                    changed (false);
+            }
+            break;
+        case Drag::mixRing:
+            if (moved) changed (false);
+            break;
+        case Drag::pan:
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+            break;
+        default: break;
     }
-    else if ((drag.kind == Hit::node || drag.kind == Hit::mixRing) && moved)
-        changed (false);
-    drag = {};
+    dragMode = Drag::none;
+    pressed = {};
+    hoverWire = { -1, -1 };
     repaint();
 }
 
 void BridgePanel::mouseDoubleClick (const juce::MouseEvent& e)
 {
-    const auto h = hitTest (e.position);
+    const auto h = hitTest (toWorld (e.position));
     if (h.kind == Hit::mixRing)
     {
         if (auto* n = ui.proc.graph().node (h.id))
@@ -494,11 +854,14 @@ void BridgePanel::mouseDoubleClick (const juce::MouseEvent& e)
     }
     else if (h.kind == Hit::node && h.id >= 2 && ui.openFullEditor)
         ui.openFullEditor (h.id);
+    else if (h.kind == Hit::none && canvas().contains (e.position))
+        fitView();
 }
 
 void BridgePanel::mouseMove (const juce::MouseEvent& e)
 {
-    const auto h = hitTest (e.position);
+    if (! canvas().contains (e.position)) { setMouseCursor (juce::MouseCursor::NormalCursor); return; }
+    const auto h = hitTest (toWorld (e.position));
     setMouseCursor (h.kind == Hit::outPort || h.kind == Hit::inPort ? juce::MouseCursor::CrosshairCursor
                     : h.kind == Hit::mixRing ? juce::MouseCursor::UpDownResizeCursor
                     : h.kind == Hit::node ? juce::MouseCursor::DraggingHandCursor
@@ -506,11 +869,29 @@ void BridgePanel::mouseMove (const juce::MouseEvent& e)
                     : juce::MouseCursor::NormalCursor);
 }
 
+void BridgePanel::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (! canvas().contains (e.position)) return;
+    if (e.mods.isShiftDown() || std::abs (w.deltaX) > std::abs (w.deltaY))
+    {
+        // horizontal scroll pans
+        pan.x -= (w.deltaX != 0.0f ? w.deltaX : w.deltaY) * 300.0f / zoom;
+        repaint();
+        return;
+    }
+    setZoom (zoom * std::pow (1.0f + 0.9f * std::abs (w.deltaY), w.deltaY > 0 ? 1.0f : -1.0f), e.position);
+}
+
+void BridgePanel::mouseMagnify (const juce::MouseEvent& e, float scale)
+{
+    setZoom (zoom * scale, e.position);
+}
+
 bool BridgePanel::keyPressed (const juce::KeyPress& k)
 {
+    auto& g = ui.proc.graph();
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
     {
-        auto& g = ui.proc.graph();
         if (selectedWire.from >= 0)
         {
             g.disconnect (selectedWire.from, selectedWire.to);
@@ -520,12 +901,19 @@ bool BridgePanel::keyPressed (const juce::KeyPress& k)
         }
         if (ui.selected >= 2)
         {
-            g.removeNode (ui.selected);
+            removeAndHeal (ui.selected);
             ui.select (-1);
             changed (true);
             return true;
         }
     }
+    if (k == juce::KeyPress ('d', juce::ModifierKeys::commandModifier, 0) && ui.selected >= 2) { duplicate (ui.selected); return true; }
+    if (k == juce::KeyPress ('b', 0, 0) && ui.selected >= 2)
+        if (auto* n = g.node (ui.selected)) { n->enabled = ! n->enabled.load(); changed (false); return true; }
+    if (k == juce::KeyPress ('f', 0, 0)) { fitView(); return true; }
+    if (k == juce::KeyPress ('0', juce::ModifierKeys::commandModifier, 0)) { setZoom (1.0f, canvas().getCentre()); return true; }
+    if (k == juce::KeyPress ('=', juce::ModifierKeys::commandModifier, 0) || k == juce::KeyPress ('+', juce::ModifierKeys::commandModifier, 0)) { setZoom (zoom * 1.2f, canvas().getCentre()); return true; }
+    if (k == juce::KeyPress ('-', juce::ModifierKeys::commandModifier, 0)) { setZoom (zoom / 1.2f, canvas().getCentre()); return true; }
     return false;
 }
 
@@ -538,21 +926,27 @@ void BridgePanel::timerCallback()
 
 // ------------------------------------------------------------------ painting
 
+void BridgePanel::drawPort (juce::Graphics& g, juce::Point<float> p, juce::Colour c, bool hot)
+{
+    const float r = hot ? 6.5f : 5.0f;
+    g.setColour (theme::bg);
+    g.fillEllipse (p.x - r, p.y - r, r * 2, r * 2);
+    g.setColour (c);
+    g.drawEllipse (p.x - r, p.y - r, r * 2, r * 2, 1.8f);
+}
+
 void BridgePanel::drawIo (juce::Graphics& g, bool input)
 {
     const int id = input ? Graph::kInputId : Graph::kOutputId;
     auto r = cardRect (id);
     const bool sel = ui.selected == id;
-    g.setColour (theme::card);
-    g.fillRect (r);
-    g.setColour (sel ? theme::light : theme::selEdge);
-    g.drawRect (r, sel ? 1.5f : 1.0f);
+    theme::drawCard (g, r, sel ? theme::accent : theme::edgeHi, sel);
     auto t = r.reduced (12.0f, 10.0f);
-    g.setColour (theme::beigeText);
-    g.setFont (theme::mono (10.5f));
+    g.setColour (theme::logo);
+    g.setFont (theme::mono (10.0f));
     g.drawText (theme::q (input ? "input" : "output"), t.removeFromTop (16.0f), juce::Justification::centredLeft);
     g.setColour (theme::text);
-    g.setFont (theme::sansMedium (14.0f));
+    g.setFont (theme::sansSemi (14.0f));
     juce::String title = "To DAW";
     if (input)
     {
@@ -563,14 +957,12 @@ void BridgePanel::drawIo (juce::Graphics& g, bool input)
     g.setFont (theme::mono (9.5f));
     if (input)
     {
-        const char* names[] = { "DAW", "GENERATOR", "FILE" };
+        const char* names[] = { "DAW", "GEN", "FILE" };
+        juce::String line;
         for (int i = 0; i < 3; ++i)
-        {
-            const bool on = (int) ui.proc.source() == i;
-            g.setColour (on ? theme::text : theme::textDim);
-            g.drawText (juce::String (on ? juce::CharPointer_UTF8 ("\xe2\x97\x8f ") : juce::CharPointer_UTF8 ("\xe2\x97\x8b ")) + names[i],
-                        t.removeFromTop (14.0f), juce::Justification::centredLeft);
-        }
+            line << ((int) ui.proc.source() == i ? juce::String (juce::CharPointer_UTF8 ("\xe2\x97\x8f ")) : juce::String (juce::CharPointer_UTF8 ("\xe2\x97\x8b "))) << names[i] << "  ";
+        g.setColour (theme::textDim);
+        g.drawText (line, t.removeFromTop (14.0f), juce::Justification::centredLeft);
     }
     else
     {
@@ -580,7 +972,7 @@ void BridgePanel::drawIo (juce::Graphics& g, bool input)
         g.drawText ("LATENCY " + juce::String (ui.proc.currentLatency()) + " SMP", t.removeFromTop (14.0f), juce::Justification::centredLeft);
     }
     auto& m = input ? ui.proc.inputMeter : ui.proc.outputMeter;
-    drawMiniMeter (g, r.reduced (12.0f, 0).withY (r.getBottom() - 14.0f).withHeight (4.0f),
+    drawMiniMeter (g, r.reduced (12.0f, 0).withY (r.getBottom() - 14.0f).withHeight (5.0f),
                    juce::jmax (m.rms[0].load(), m.rms[1].load()) * 1.414f);
 }
 
@@ -592,25 +984,25 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
     const auto r = cardRect (id);
     const bool sel = ui.selected == id;
     const bool on = n->enabled.load();
+    const bool loose = ! isConnected (id);
     const float alpha = on ? 1.0f : 0.5f;
+    const auto cat = typeColour (n->type);
 
-    if (sel)
-    {
-        g.setColour (theme::shadow);
-        g.fillRect (r.translated (4.0f, 4.0f));
-    }
-    g.setColour (theme::card);
-    g.fillRect (r);
-    g.setColour (sel ? theme::light : theme::edge);
-    g.drawRect (r, sel ? 1.5f : 1.0f);
+    theme::drawCard (g, r, sel ? cat : (loose ? theme::edge.brighter (0.2f) : theme::edge), sel, cat.withMultipliedAlpha (alpha), loose);
 
-    auto t = r.reduced (12.0f, 10.0f);
+    auto t = r.reduced (12.0f, 10.0f).withTrimmedLeft (4.0f);
     auto top = t.removeFromTop (14.0f);
-    g.setColour (theme::textDim.withMultipliedAlpha (alpha));
+    g.setColour (cat.withMultipliedAlpha (alpha));
     g.setFont (theme::mono (9.5f));
-    g.drawText (juce::String (id - 1).paddedLeft ('0', 2) + "  " + theme::q (typeLabel (n->type).toLowerCase()), top, juce::Justification::centredLeft);
-    g.setColour (on ? theme::goodEdge : theme::textDim.withAlpha (0.4f));
-    g.fillEllipse (r.getRight() - 18.0f, r.getY() + 10.0f, 8.0f, 8.0f);
+    g.drawText (stageText (ui.proc.graph(), id) + "  " + typeLabel (n->type), top, juce::Justification::centredLeft);
+    const auto dot = juce::Rectangle<float> (r.getRight() - 18.0f, r.getY() + 10.0f, 8.0f, 8.0f);
+    if (on)
+    {
+        g.setColour (theme::good.withAlpha (0.35f));
+        g.fillEllipse (dot.expanded (2.5f));
+    }
+    g.setColour (on ? theme::good : theme::textFaint);
+    g.fillEllipse (dot);
 
     t.removeFromTop (4.0f);
     g.setColour (theme::text.withMultipliedAlpha (alpha));
@@ -618,7 +1010,7 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
     g.drawText (juce::String (n->name), t.removeFromTop (20.0f), juce::Justification::centredLeft, true);
 
     // bottom row: mix ring + info
-    auto bottom = juce::Rectangle<float> (r.getX() + 8.0f, r.getBottom() - 36.0f, r.getWidth() - 16.0f, 30.0f);
+    auto bottom = juce::Rectangle<float> (r.getX() + 10.0f, r.getBottom() - 36.0f, r.getWidth() - 18.0f, 30.0f);
     auto ring = bottom.removeFromLeft (30.0f).reduced (3.0f);
     const float mix = n->mix.load();
     juce::Path track, val;
@@ -626,9 +1018,10 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
     track.addCentredArc (ring.getCentreX(), ring.getCentreY(), 10.0f, 10.0f, 0.0f, a0, a1, true);
     val.addCentredArc (ring.getCentreX(), ring.getCentreY(), 10.0f, 10.0f, 0.0f, a0, a0 + mix * (a1 - a0), true);
     g.setColour (theme::grid);
-    g.strokePath (track, juce::PathStrokeType (3.0f));
-    g.setColour (theme::text.withMultipliedAlpha (alpha));
-    g.strokePath (val, juce::PathStrokeType (3.0f));
+    g.strokePath (track, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (cat.withMultipliedAlpha (alpha));
+    g.strokePath (val, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (theme::textDim.withMultipliedAlpha (alpha));
     g.setFont (theme::mono (10.0f));
     g.drawText ("MIX " + juce::String (juce::roundToInt (mix * 100)) + "%", bottom.removeFromLeft (64.0f).withTrimmedLeft (4.0f), juce::Justification::centredLeft);
 
@@ -638,15 +1031,20 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
         g.setColour (theme::textDim);
         g.drawText ("BYPASSED", info, juce::Justification::centredRight);
     }
+    else if (loose)
+    {
+        g.setColour (theme::warn);
+        g.drawText ("NOT CONNECTED", info, juce::Justification::centredRight);
+    }
     else if (n->type == "dynamics.compressor")
     {
         const float gr = n->module->meter (0);
         auto bar = info.withSizeKeepingCentre (info.getWidth() - 6.0f, 6.0f);
         g.setColour (theme::grid);
-        g.fillRect (bar);
+        g.fillRoundedRectangle (bar, 3.0f);
         const float w = juce::jlimit (0.0f, 1.0f, -gr / 20.0f) * bar.getWidth();
-        g.setColour (theme::beige);
-        g.fillRect (bar.withLeft (bar.getRight() - w));
+        g.setColour (cat);
+        g.fillRoundedRectangle (bar.withLeft (bar.getRight() - w), 3.0f);
     }
     else if (n->type == "tone.eq")
     {
@@ -661,12 +1059,11 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
         }
         g.setColour (theme::grid);
         g.drawHorizontalLine ((int) info.getCentreY(), info.getX(), info.getRight());
-        g.setColour (theme::beige);
-        g.strokePath (p, juce::PathStrokeType (1.3f));
+        g.setColour (cat);
+        g.strokePath (p, juce::PathStrokeType (1.4f));
     }
     else
     {
-        // first SIMPLE parameter as a hint
         for (int i = 0; i < n->module->numParams(); ++i)
         {
             const auto& s = n->module->params()[(size_t) i];
@@ -680,37 +1077,51 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
         }
     }
 
-    if (sel)
-        theme::drawTag (g, juce::Rectangle<int> ((int) r.getX(), (int) r.getY() - 22, 70, 16), "SELECTED", theme::beige, theme::beigeEdge, theme::beigeTag);
-
-    // ports
-    for (auto p : { inPort (id), outPort (id) })
-    {
-        g.setColour (theme::panel);
-        g.fillEllipse (p.x - 5, p.y - 5, 10, 10);
-        g.setColour (theme::text);
-        g.drawEllipse (p.x - 5, p.y - 5, 10, 10, 1.4f);
-    }
+    bool inUsed = false, outUsed = false;
+    for (auto& e : ui.proc.graph().edges()) { inUsed |= e.to == id; outUsed |= e.from == id; }
+    drawPort (g, inPort (id), inUsed ? theme::signalBlue : theme::textDim, false);
+    drawPort (g, outPort (id), outUsed ? theme::signalBlue : theme::textDim, false);
 }
 
 void BridgePanel::paint (juce::Graphics& g)
 {
     theme::drawPanel (g, getLocalBounds(), "Bridge", "Fig. 02 - signal path");
-    g.setColour (theme::textDim);
-    g.setFont (theme::sans (12.0f));
-    g.drawText ("Drag from a port to connect  -  parallel lines are summed  -  Delete removes the selection",
-                getLocalBounds().withHeight (40).reduced (16, 0), juce::Justification::centredRight);
+    {
+        auto hint = getLocalBounds().withHeight (kHeader).reduced (16, 0).withTrimmedRight (226);
+        g.setColour (theme::textFaint);
+        g.setFont (theme::sans (12.0f));
+        g.drawText ("Scroll to zoom - drag space to pan - drag a wire's end to re-route - Shift-drag pulls a block out",
+                    hint, juce::Justification::centredRight);
+        // zoom %
+        g.setColour (theme::textDim);
+        g.setFont (theme::mono (10.0f));
+        g.drawText (juce::String (juce::roundToInt (zoom * 100)) + " %", zoomOut.getBounds().translated (26, 0).withWidth (48), juce::Justification::centred);
+    }
 
     const auto c = canvas();
-    g.setColour (theme::dashed);
-    for (float y = c.getY() + 10.0f; y < c.getBottom(); y += 20.0f)
-        for (float x = 10.0f; x < (float) getWidth(); x += 20.0f)
-            g.fillRect (x, y, 1.0f, 1.0f);
+    g.saveState();
+    g.reduceClipRegion (c.toNearestInt());
 
+    // dotted paper grid (screen space, follows the pan)
+    {
+        const float step = 22.0f * zoom;
+        if (step >= 7.0f)
+        {
+            const auto origin = juce::Point<float> (0.0f, 0.0f).transformedBy (view());
+            const float x0 = c.getX() + std::fmod (origin.x - c.getX(), step) - step;
+            const float y0 = c.getY() + std::fmod (origin.y - c.getY(), step) - step;
+            g.setColour (theme::edge.withAlpha (0.7f));
+            for (float y = y0; y < c.getBottom(); y += step)
+                for (float x = x0; x < c.getRight(); x += step)
+                    g.fillRect (x, y, 1.2f, 1.2f);
+        }
+    }
+
+    g.addTransform (view());
     auto& gr = ui.proc.graph();
     const auto edges = gr.edges();
 
-    // wires: dashed when part of a split/merge (parallel path)
+    // wires: dashed + violet when part of a split/merge (parallel path)
     for (auto& e : edges)
     {
         int outs = 0, ins = 0, outIdx = 0, inIdx = 0;
@@ -721,77 +1132,80 @@ void BridgePanel::paint (juce::Graphics& g)
         }
         const bool parallel = (outs > 1 && outIdx > 0) || (ins > 1 && inIdx > 0);
         const bool sel = selectedWire == e;
+        const bool target = hoverWire == e;
         auto path = wirePath (outPort (e.from), inPort (e.to));
-        if (parallel && ! sel)
+        if (sel || target)
+        {
+            g.setColour (theme::accent.withAlpha (0.25f));
+            g.strokePath (path, juce::PathStrokeType (7.0f));
+            g.setColour (theme::accent);
+            g.strokePath (path, juce::PathStrokeType (2.4f));
+        }
+        else if (parallel)
         {
             juce::Path dashedPath;
-            const float dash[] = { 6.0f, 4.0f };
-            juce::PathStrokeType (1.6f).createDashedStroke (dashedPath, path, dash, 2);
+            const float dash[] = { 6.0f, 5.0f };
+            juce::PathStrokeType (2.0f).createDashedStroke (dashedPath, path, dash, 2);
             g.setColour (theme::parallel);
             g.fillPath (dashedPath);
         }
         else
         {
-            g.setColour (sel ? theme::beige : theme::text.withAlpha (0.8f));
-            g.strokePath (path, juce::PathStrokeType (sel ? 2.2f : 1.6f));
+            g.setColour (theme::signalBlue.withAlpha (0.85f));
+            g.strokePath (path, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         }
     }
 
-    // wire being dragged
-    if (drag.kind == Hit::outPort || drag.kind == Hit::inPort)
+    // wire being dragged / re-routed
+    if (dragMode == Drag::newWireFromOut || dragMode == Drag::newWireFromIn || dragMode == Drag::rewire)
     {
-        const auto a = drag.kind == Hit::outPort ? outPort (drag.id) : dragNow;
-        const auto b = drag.kind == Hit::outPort ? dragNow : inPort (drag.id);
-        g.setColour (theme::beige);
-        g.strokePath (wirePath (a, b), juce::PathStrokeType (1.6f));
-    }
-
-    if (pendingType.isNotEmpty() && canvas().contains (dragNow))
-    {
-        auto ghost = juce::Rectangle<float> (dragNow.x - kCardW * 0.5f, dragNow.y - kCardH * 0.5f, (float) kCardW, (float) kCardH);
-        g.setColour (theme::beige.withAlpha (0.6f));
-        const float dash[] = { 5.0f, 4.0f };
-        juce::Path outline, d;
-        outline.addRectangle (ghost);
-        juce::PathStrokeType (1.2f).createDashedStroke (d, outline, dash, 2);
-        g.fillPath (d);
-        g.setFont (theme::mono (10.5f));
-        g.drawText (typeLabel (pendingType.toStdString()), ghost, juce::Justification::centred);
-        const auto w = nearestWire (dragNow, 14.0f);
-        if (w.from >= 0)
-        {
-            g.setColour (theme::beige);
-            g.strokePath (wirePath (outPort (w.from), inPort (w.to)), juce::PathStrokeType (2.4f));
-        }
+        const auto a = dragMode == Drag::newWireFromOut ? outPort (pressed.id) : dragMode == Drag::rewire ? outPort (rewireFrom) : nowWorld;
+        const auto b = dragMode == Drag::newWireFromIn ? inPort (pressed.id) : nowWorld;
+        g.setColour (theme::accent.withAlpha (0.25f));
+        g.strokePath (wirePath (a, b), juce::PathStrokeType (7.0f));
+        g.setColour (theme::accent);
+        g.strokePath (wirePath (a, b), juce::PathStrokeType (2.4f));
+        g.fillEllipse (nowWorld.x - 4.0f, nowWorld.y - 4.0f, 8.0f, 8.0f);
     }
 
     drawIo (g, true);
     drawIo (g, false);
     for (int id : gr.nodeIds())
         drawCard (g, id);
-    for (auto p : { outPort (Graph::kInputId), inPort (Graph::kOutputId) })
+    drawPort (g, outPort (Graph::kInputId), theme::signalBlue, false);
+    drawPort (g, inPort (Graph::kOutputId), theme::signalBlue, false);
+
+    if (pendingType.isNotEmpty() && canvas().contains (nowScreen))
     {
-        g.setColour (theme::panel);
-        g.fillEllipse (p.x - 5, p.y - 5, 10, 10);
-        g.setColour (theme::text);
-        g.drawEllipse (p.x - 5, p.y - 5, 10, 10, 1.4f);
+        auto ghost = juce::Rectangle<float> (nowWorld.x - kCardW * 0.5f, nowWorld.y - kCardH * 0.5f, (float) kCardW, (float) kCardH);
+        const auto col = typeColour (pendingType.toStdString());
+        juce::Path outline, d;
+        outline.addRoundedRectangle (ghost, 10.0f);
+        const float dash[] = { 5.0f, 4.0f };
+        juce::PathStrokeType (1.4f).createDashedStroke (d, outline, dash, 2);
+        g.setColour (col.withAlpha (0.8f));
+        g.fillPath (d);
+        g.setFont (theme::mono (10.5f));
+        g.drawText (typeLabel (pendingType.toStdString()), ghost, juce::Justification::centred);
     }
+    g.restoreState();
 
     if (gr.nodeIds().empty())
     {
         g.setColour (theme::textDim);
         g.setFont (theme::sans (13.0f));
-        g.drawText ("Click a block below to add it - or drag it onto the line.", c.withTrimmedTop (c.getHeight() * 0.62f).toNearestInt(),
+        g.drawText ("Click a block below to add it - or drag it onto the line.", c.withTrimmedTop (c.getHeight() * 0.72f).toNearestInt(),
                     juce::Justification::centredTop);
     }
     if (flash.isNotEmpty())
     {
-        auto box = juce::Rectangle<float> (c.getCentreX() - 230, c.getY() + 10, 460, 28);
+        auto box = juce::Rectangle<float> (c.getCentreX() - 250, c.getY() + 10, 500, 30);
         g.setColour (theme::card);
-        g.fillRect (box);
+        g.fillRoundedRectangle (box, 8.0f);
         g.setColour (theme::warn);
-        g.drawRect (box, 1.0f);
+        g.drawRoundedRectangle (box, 8.0f, 1.0f);
         g.setFont (theme::sans (12.5f));
+        g.setColour (theme::text);
         g.drawText (flash, box, juce::Justification::centred);
     }
 }

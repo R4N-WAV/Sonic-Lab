@@ -33,6 +33,8 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p) : AudioProcessorEditor (&p), 
             closeEditor();
     };
     ui.openFullEditor = [this] (int id) { openEditor (id); };
+    ui.backToBridge = [this] { exportDialog.reset(); if (overlay != nullptr) closeEditor(); };
+    ui.menuParent = &content;
     header.onExport = [this] { showExport(); };
 
     // size: as large as the screen comfortably allows, fixed 16:10 aspect
@@ -122,7 +124,12 @@ void AtelierEditor::openEditor (int nodeId)
     else if (n->type == "character.saturation")
         overlay = std::make_unique<SaturationEditor> (ui, nodeId);
     else
-        return; // other blocks use the inspector's advanced view
+    {
+        // other blocks: their full controls live in the inspector's ADVANCED view
+        inspector.showAdvanced();
+        return;
+    }
+    ui.openEditorId = nodeId;
     juce::Component::SafePointer<AtelierEditor> safe (this);
     overlay->onClose = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->closeEditor(); }); };
     content.addAndMakeVisible (*overlay);
@@ -133,6 +140,7 @@ void AtelierEditor::openEditor (int nodeId)
 void AtelierEditor::closeEditor()
 {
     overlay.reset();
+    ui.openEditorId = -1;
     inspector.rebuild();
     bridge.repaint();
 }

@@ -17,6 +17,12 @@ public:
 
     static constexpr int kW = 1600, kH = 1000;
 
+    // for headless snapshots / tests
+    void selectBlock (int id) { ui.select (id); }
+    void openBlock (int id) { openEditor (id); }
+    void closeBlock() { closeEditor(); }
+    void pumpAnalysis() { lastVBlank = 0.0; onVBlank(); }
+
 private:
     void timerCallback() override;
     void onVBlank();

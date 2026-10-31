@@ -6,6 +6,7 @@
 #include "../plugin/Source/Blueprint.h"
 #include "../plugin/Source/Measure.h"
 #include "../plugin/Source/Widgets.h"
+#include "../plugin/Source/Templates.h"
 #include "../plugin/Source/PluginProcessor.h"
 
 #include <cstdio>
@@ -248,6 +249,46 @@ int main()
             tmp.deleteRecursively();
     }
 
+
+    // ---- templates ----
+    {
+        int ok = 0, total = 0;
+        juce::String bad;
+        for (auto& t : templates::factory())
+        {
+            ++total;
+            auto tree = templates::bridgeFor (t);
+            sonic::Graph g;
+            AtelierProcessor::treeToGraph (tree, g);
+            g.prepare (48000.0, 512);
+            const bool hasPath = ! g.activeOrder().empty();
+            std::vector<float> l (48000), r (48000);
+            for (size_t i = 0; i < l.size(); ++i) l[i] = r[i] = 0.25f * (float) std::sin (2.0 * 3.14159265 * 220.0 * (double) i / 48000.0);
+            bool finite = true;
+            double energy = 0;
+            for (size_t i = 0; i < l.size(); i += 512)
+            {
+                float* ch[2] = { l.data() + i, r.data() + i };
+                g.process (ch, 2, (int) juce::jmin ((size_t) 512, l.size() - i));
+            }
+            for (size_t i = 24000; i < l.size(); ++i) { finite = finite && std::isfinite (l[i]); energy += l[i] * (double) l[i]; }
+            if (hasPath && finite && energy > 1e-3) ++ok; else bad << t.name << "; ";
+        }
+        check (ok == total && total >= 30, juce::String (total) + " factory templates build, connect and play clean audio" + (bad.isEmpty() ? "" : " (failed: " + bad + ")"));
+
+        juce::String err;
+        const juce::String name = "Atelier test template " + juce::String (juce::Random::getSystemRandom().nextInt (100000));
+        const bool saved = templates::save (name, "Tests", "temporary", p->bridgeToTree(), err);
+        bool found = false, removed = false, sameBridge = false;
+        for (auto& t : templates::personal())
+            if (t.name == name)
+            {
+                found = true;
+                sameBridge = templates::bridgeFor (t).isEquivalentTo (p->bridgeToTree());
+                removed = templates::remove (t);
+            }
+        check (saved && found && sameBridge && removed, "personal template saves, lists, loads identically and deletes" + (err.isEmpty() ? "" : " (" + err + ")"));
+    }
 
     // ---- typed values ----
     check (std::abs (parseTypedValue ("2k", "Hz", 0) - 2000.0) < 1e-9 && std::abs (parseTypedValue ("2.5 kHz", "Hz", 0) - 2500.0) < 1e-9,

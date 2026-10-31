@@ -45,6 +45,7 @@ namespace
             entry<ChorusModule> ("Modulation", "Multi-voice chorus."),
             entry<FlangerModule> ("Modulation", "Swept comb flanger."),
             entry<PhaserModule> ("Modulation", "Allpass phaser, 2 to 12 stages."),
+            entry<PitchModule> ("Pitch", "Transpose by semitones and cents; doubler, octaver, shimmer."),
             entry<StereoModule> ("Utility", "Width, mid/side, bass mono, balance."),
             entry<GainModule> ("Utility", "Gain, polarity, mono."),
         };

@@ -45,7 +45,7 @@ namespace
     {
         if (ms < 0) return "n/a";
         if (ms < resolution) return "< " + juce::String (resolution, 1) + " ms";
-        return juce::String (ms, ms < 10 ? 1 : 0) + " ms";
+        return numText (ms, ms < 10 ? 1 : 0) + " ms";
     }
 
     juce::String fmtNum (double v, int dp = 2)
@@ -120,7 +120,7 @@ namespace
                 const float x = xmap (v);
                 g.setColour (cGrid); g.drawVerticalLine ((int) x, r.getY(), r.getBottom());
                 g.setColour (cDim);
-                g.drawText (juce::String (v, std::abs (p.x1 - p.x0) < 20 ? 1 : 0), (int) x - 50, (int) r.getBottom() + 8, 100, 22, juce::Justification::centred);
+                g.drawText (numText (v, std::abs (p.x1 - p.x0) < 20 ? 1 : 0), (int) x - 50, (int) r.getBottom() + 8, 100, 22, juce::Justification::centred);
             }
         for (int i = 0; i <= 8; ++i)
         {
@@ -129,7 +129,7 @@ namespace
             g.setColour (std::abs (v) < 1e-9 ? cGrey : cGrid);
             g.drawHorizontalLine ((int) y, r.getX(), r.getRight());
             g.setColour (cDim);
-            g.drawText (juce::String (v, std::abs (p.y1 - p.y0) < 8 ? 2 : 0), 10, (int) y - 11, 100, 22, juce::Justification::centredRight);
+            g.drawText (numText (v, std::abs (p.y1 - p.y0) < 8 ? 2 : 0), 10, (int) y - 11, 100, 22, juce::Justification::centredRight);
         }
         g.setColour (cDim);
         g.setFont (theme::sans (19.0f));
@@ -1061,7 +1061,7 @@ juce::File exportPackage (const juce::ValueTree& bridge, const Options& opt, con
            << "## Key measurements (offline, from the saved bridge)\n\n"
            << "| Measurement | Value | Classification |\n|---|---|---|\n";
     for (auto& l : m.levels)
-        readme << "| 1 kHz at " << juce::String (l.inDb, 0) << " dBFS -> output | " << juce::String (l.outDb, 2) << " dBFS, THD " << juce::String (l.thdPct, 3) << " % | measured |\n";
+        readme << "| 1 kHz at " << juce::String (juce::roundToInt (l.inDb)) << " dBFS -> output | " << juce::String (l.outDb, 2) << " dBFS, THD " << juce::String (l.thdPct, 3) << " % | measured |\n";
     readme << "| Attack (63 %) | " << timingText (m.attackMs, m.timingResolutionMs) << " | measured |\n"
            << "| Release (63 % / 90 %) | " << timingText (m.releaseMs, m.timingResolutionMs) << " / " << timingText (m.release90Ms, m.timingResolutionMs) << " | measured |\n"
            << "| Mean coherence (linearity) | " << juce::String (m.meanCoherence, 3) << " | measured |\n"

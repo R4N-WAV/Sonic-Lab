@@ -31,8 +31,11 @@ void Module::setParam (int index, float value)
     if (s.isChoice())
         value = std::round (value);
 
+    const float old = values[index].load (std::memory_order_relaxed);
     values[index].store (value, std::memory_order_relaxed);
     version.fetch_add (1, std::memory_order_relaxed);
+    if (old != value)
+        paramChanged (index);
 }
 
 void Module::resetParamsToDefault()

@@ -771,4 +771,87 @@ void GainModule::process (float* const* io, int numCh, int n)
     }
 }
 
+// =============================================================== PITCH
+
+namespace pit { enum P { pSemi, pCents, pWindow, pSpread, pFb, pTone }; }
+
+PitchModule::PitchModule()
+{
+    specs = {
+        ParamSpec::num ("semitones", "Pitch", "st", -24, 24, 0, 0, "Transposition in semitones (12 = one octave up).", true, "Pitch"),
+        ParamSpec::num ("cents", "Fine", "ct", -100, 100, 0, 0, "Fine tuning in cents (100 cents = 1 semitone).", true, "Pitch"),
+        ParamSpec::num ("window_ms", "Grain", "ms", 10, 150, 50, 50,
+            "Length of the overlapping grains. Short = tighter timing but buzzier; long = smoother but smeared.", false, "Character"),
+        ParamSpec::num ("spread_cents", "Stereo detune", "ct", 0, 50, 0, 0,
+            "Left goes down and right goes up by this amount: a wide doubler.", false, "Character"),
+        ParamSpec::num ("feedback", "Feedback", "", 0, 0.9f, 0, 0,
+            "Feeds the shifted signal back in: each repeat is shifted again (shimmer cascades).", false, "Character"),
+        ParamSpec::num ("tone_hz", "Tone", "Hz", 1000, 20000, 20000, 6000, "Low-pass on the shifted signal.", false, "Character"),
+    };
+    finaliseParams();
+}
+
+std::string PitchModule::topology() const
+{
+    return "Time-domain pitch shifter (rotating-tap delay): per channel a cubic-interpolated delay line is read by two taps whose delay "
+           "ramps at rate (1 - ratio) over a window W (Grain) and wraps; the taps are half a window apart and cross-faded with "
+           "sin^2 weights that sum to 1. ratio = 2^((semitones + cents/100 -/+ spread/100) / 12) for L/R. Optional feedback of the "
+           "shifted output into the line, then a 1-pole low-pass (Tone). No latency compensation: the effective delay is about W/2.";
+}
+
+void PitchModule::prepare (double sampleRate, int, int)
+{
+    fs = sampleRate;
+    for (auto& l : line) l.allocate ((int) (fs * 0.32));
+    reset();
+}
+
+void PitchModule::reset()
+{
+    for (auto& l : line) l.clear();
+    phase = { 0.0, 0.0 };
+    toneZ = { 0.0, 0.0 };
+    fbZ = { 0.0, 0.0 };
+}
+
+double PitchModule::ratio (int c) const
+{
+    using namespace pit;
+    const double spread = getParam (pSpread) * (c == 0 ? -1.0 : 1.0);
+    return std::pow (2.0, (getParam (pSemi) + (getParam (pCents) + spread) * 0.01) / 12.0);
+}
+
+void PitchModule::process (float* const* io, int numCh, int n)
+{
+    using namespace pit;
+    const double W = std::max (16.0, getParam (pWindow) * 0.001 * fs);
+    const double minD = 4.0;
+    const double fb = getParam (pFb);
+    const double toneA = getParam (pTone) >= 19999.0f ? 0.0 : std::exp (-kTwoPi * getParam (pTone) / fs);
+    for (int c = 0; c < std::min (numCh, 2); ++c)
+    {
+        const double step = (1.0 - ratio (c)) / W;   // phase change per sample (delay grows when pitching down)
+        auto& l = line[(size_t) c];
+        double ph = phase[(size_t) c];
+        for (int i = 0; i < n; ++i)
+        {
+            l.push ((float) (io[c][i] + fb * fbZ[(size_t) c]));
+            double y = 0.0;
+            for (int t = 0; t < 2; ++t)
+            {
+                double p = ph + 0.5 * t;
+                p -= std::floor (p);
+                const double w = std::sin (kPi * p);
+                y += w * w * l.read (minD + p * W);
+            }
+            ph += step;
+            ph -= std::floor (ph);
+            fbZ[(size_t) c] = y;
+            toneZ[(size_t) c] = y + toneA * (toneZ[(size_t) c] - y);
+            io[c][i] = (float) toneZ[(size_t) c];
+        }
+        phase[(size_t) c] = ph;
+    }
+}
+
 } // namespace sonic

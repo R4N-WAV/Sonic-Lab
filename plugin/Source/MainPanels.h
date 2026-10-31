@@ -14,9 +14,14 @@ public:
 
 private:
     void timerCallback() override;
+    void showTemplateMenu();
+    void saveTemplateDialog();
+    void loadTemplate (const juce::ValueTree& bridge, const juce::String& name);
     Ui& ui;
     juce::Label study;
-    juce::TextButton aButton { "A  PROCESSED" }, bButton { "B  DRY" }, matchButton { "GAIN MATCH" };
+    juce::TextButton navButton { "BRIDGE" }, templatesButton { "TEMPLATES" };
+    juce::String location;
+    juce::TextButton aButton { "A  WET" }, bButton { "B  DRY" }, matchButton { "MATCH" };
     juce::TextButton undoButton { "UNDO" }, redoButton { "REDO" }, exportButton { "EXPORT \"BLUEPRINT\"" };
     std::unique_ptr<ButtonAttachment> matchAtt;
     juce::RangedAudioParameter* bypass = nullptr;

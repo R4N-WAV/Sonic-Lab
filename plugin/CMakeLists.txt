@@ -37,7 +37,8 @@ target_sources(Atelier PRIVATE
     Source/Inspector.cpp
     Source/BlockEditors.cpp
     Source/Measure.cpp
-    Source/Blueprint.cpp)
+    Source/Blueprint.cpp
+    Source/Templates.cpp)
 
 # Fonts (SIL Open Font License) are downloaded by CI into plugin/Fonts; without
 # them the UI falls back to system fonts.
@@ -88,4 +89,11 @@ if(SONIC_BUILD_TESTS)
     target_compile_features(atelier_plugin_tests PRIVATE cxx_std_17)
     target_link_libraries(atelier_plugin_tests PRIVATE Atelier)
     add_test(NAME plugin_smoke COMMAND atelier_plugin_tests)
+
+    # Development helper: renders the editor to PNGs (not run in CI)
+    add_executable(atelier_snapshot EXCLUDE_FROM_ALL ${CMAKE_SOURCE_DIR}/tests/Snapshot.cpp)
+    target_include_directories(atelier_snapshot PRIVATE $<TARGET_PROPERTY:Atelier,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(atelier_snapshot PRIVATE $<TARGET_PROPERTY:Atelier,COMPILE_DEFINITIONS>)
+    target_compile_features(atelier_snapshot PRIVATE cxx_std_17)
+    target_link_libraries(atelier_snapshot PRIVATE Atelier)
 endif()

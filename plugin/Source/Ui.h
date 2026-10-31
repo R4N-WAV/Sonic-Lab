@@ -20,6 +20,17 @@ struct Ui
     std::function<void()> onSelectionChanged;
     std::function<void (int)> openFullEditor;   // block id
     std::function<void()> onBridgeChanged;      // structure changed (rebuild views)
+    std::function<void()> backToBridge;         // close any full editor / dialog
+    int openEditorId = -1;                      // block whose full editor is open, or -1
+    std::function<void()> onNavigationChanged;
+    std::function<void()> onTemplateLoaded;
+    juce::Component* menuParent = nullptr;      // popup menus render inside the plugin (scaled with it)
+
+    juce::PopupMenu::Options menuOptions() const
+    {
+        auto o = juce::PopupMenu::Options().withPreferredPopupDirection (juce::PopupMenu::Options::PopupDirection::downwards);
+        return menuParent != nullptr ? o.withParentComponent (menuParent) : o;
+    }
 
     void select (int id)
     {

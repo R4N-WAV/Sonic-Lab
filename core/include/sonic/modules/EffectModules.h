@@ -126,6 +126,18 @@ class GainModule final : public Module
     SONIC_MODULE_BOILERPLATE (GainModule, "utility.gain", "Utility")
 };
 
+class PitchModule final : public Module
+{
+    SONIC_MODULE_BOILERPLATE (PitchModule, "pitch.shift", "Pitch")
+    float defaultMix() const override { return 1.0f; }
+    double ratio (int channel) const;   // current pitch ratio (1 = unchanged)
+private:
+    std::array<FracDelay, 2> line;
+    std::array<double, 2> phase { 0.0, 0.0 }, toneZ { 0.0, 0.0 }, fbZ { 0.0, 0.0 };
+
 #undef SONIC_MODULE_BOILERPLATE
+
+    double fs = 48000.0;
+};
 
 } // namespace sonic

@@ -518,6 +518,38 @@ void testCharacterAndEffects()
         check (ok, "Chorus / Flanger / Phaser: audible, finite processing");
     }
     {
+        // Pitch: 1 kHz in -> the dominant tone moves by the chosen interval
+        auto dominant = [] (const std::vector<float>& x)
+        {
+            auto spec = computeSpectrum (x.data() + x.size() / 2, (int) x.size() / 2, 16384, kFs, WindowType::blackmanHarris4);
+            int best = 1;
+            for (int k = 1; k < (int) spec.amplitude.size(); ++k) if (spec.amplitude[(size_t) k] > spec.amplitude[(size_t) best]) best = k;
+            return best * spec.binHz();
+        };
+        auto shifted = [&] (float semis, float cents)
+        {
+            auto m = createModule ("pitch.shift");
+            m->prepare (kFs, kBlock, 2);
+            m->setParam ("semitones", semis);
+            m->setParam ("cents", cents);
+            Stereo s = sine (1000, -12, 96000);
+            run (*m, s);
+            return dominant (s.l);
+        };
+        const double up = shifted (12, 0), down = shifted (-12, 0), fifth = shifted (7, 0), zero = shifted (0, 0);
+        check (std::abs (up - 2000) < 8 && std::abs (down - 500) < 8,
+               fmt ("Pitch: +12 st -> %.0f Hz, -12 st -> %.0f Hz (expected 2000 / 500)", up, down));
+        check (std::abs (fifth - 1000 * std::pow (2.0, 7.0 / 12.0)) < 8 && std::abs (zero - 1000) < 4,
+               fmt ("Pitch: +7 st -> %.0f Hz (expected 1498), 0 st -> %.0f Hz", fifth, zero));
+        auto m = createModule ("pitch.shift");
+        m->prepare (kFs, kBlock, 2);
+        Stereo s = sine (1000, -12, 48000), ref = s;
+        run (*m, s);
+        double e = 0, r = 0;
+        for (int i = 24000; i < 48000; ++i) { e += s.l[(size_t) i] * (double) s.l[(size_t) i]; r += ref.l[(size_t) i] * (double) ref.l[(size_t) i]; }
+        check (std::abs (10.0 * std::log10 (e / r)) < 1.0, fmt ("Pitch at 0 st keeps the level (%.2f dB)", 10.0 * std::log10 (e / r)));
+    }
+    {
         auto crest = [] (float attack)
         {
             TransientModule m;

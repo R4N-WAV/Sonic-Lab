@@ -52,7 +52,7 @@ private:
 
     juce::TextButton back { "<-  BRIDGE" };
     juce::OwnedArray<juce::TextButton> rangeButtons;
-    double fixedRange = 24.0;
+    double fixedRange = 12.0;
     bool autoRange = false;
     int selected = -1, dragBand = -1;
     juce::Point<float> dragStart;

@@ -42,12 +42,24 @@ const SaturationModule::Recipe& SaturationModule::recipe (int index)
     return kRecipes[std::clamp (index, 0, kNumRecipes - 1)];
 }
 
+void SaturationModule::paramChanged (int index)
+{
+    if (linking) return;
+    linking = true;
+    if (index == pChar)
+        applyRecipe ((int) getParam (pChar));                 // choosing a recipe loads its harmonics
+    else if ((index >= pH2 && index < pH2 + kMaxHarmonic - 1) || index == pSoft || index == pLevelDep || index == pEvenOdd || index == pDecay)
+        setParam (pChar, (float) (kNumRecipes - 1));          // hand-editing the recipe makes it "Custom"
+    linking = false;
+}
+
 void SaturationModule::applyRecipe (int index)
 {
+    const bool wasLinking = linking;
+    linking = true;
     index = std::clamp (index, 0, kNumRecipes - 1);
     setParam (pChar, (float) index);
-    if (index == kNumRecipes - 1)
-        return; // Custom keeps the current harmonics
+    if (index == kNumRecipes - 1) { linking = wasLinking; return; } // Custom keeps the current harmonics
     const auto& r = kRecipes[index];
     for (int h = 0; h < kMaxHarmonic - 1; ++h)
         setParam (pH2 + h, r.levelsDbc[h]);
@@ -55,6 +67,7 @@ void SaturationModule::applyRecipe (int index)
     setParam (pLevelDep, r.levelDependence);
     setParam (pEvenOdd, 0.0f);
     setParam (pDecay, 0.0f);
+    linking = wasLinking;
 }
 
 SaturationModule::SaturationModule()

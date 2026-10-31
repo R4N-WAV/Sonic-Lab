@@ -112,6 +112,9 @@ public:
 
 protected:
     void finaliseParams(); // call at the end of the derived constructor
+    // Called (on the thread that set it) after a parameter value actually changed.
+    // Used for linked controls, e.g. picking a saturation recipe loads its harmonics.
+    virtual void paramChanged (int /*index*/) {}
 
     std::vector<ParamSpec> specs;
     std::unique_ptr<std::atomic<float>[]> values;

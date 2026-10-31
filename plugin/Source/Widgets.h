@@ -4,6 +4,16 @@
 #include "Theme.h"
 
 #include <sonic/Module.h>
+#include <sonic/ModuleRegistry.h>
+
+// Category colour of a block type (Character amber, Dynamics coral, Tone teal ...).
+inline juce::Colour blockColour (const std::string& type)
+{
+    for (auto& m : sonic::availableModules())
+        if (m.typeId == type)
+            return theme::categoryColour (m.category);
+    return theme::textDim;
+}
 
 // ------------------------------------------------------------------ formatting
 
@@ -11,15 +21,15 @@ inline juce::String formatValue (double v, const juce::String& unit)
 {
     if (unit == "Hz")
         return v >= 1000.0 ? juce::String (v / 1000.0, v >= 10000.0 ? 1 : 2) + " kHz"
-                           : juce::String (v, v < 100.0 ? 1 : 0) + " Hz";
+                           : numText (v, v < 100.0 ? 1 : 0) + " Hz";
     if (unit == "dB" || unit == "dBc")
         return (v > 0.0 && unit == "dB" ? "+" : "") + juce::String (v, 1) + " " + unit;
     if (unit == "%")
-        return juce::String (v, 0) + " %";
+        return juce::String (juce::roundToInt (v)) + " %";
     if (unit == "ms")
-        return juce::String (v, v < 10.0 ? 2 : (v < 100.0 ? 1 : 0)) + " ms";
+        return numText (v, v < 10.0 ? 2 : (v < 100.0 ? 1 : 0)) + " ms";
     if (unit == "deg")
-        return juce::String (v, 0) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+        return juce::String (juce::roundToInt (v)) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
     if (unit == ":1")
         return juce::String (v, 1) + ":1";
     if (unit == "s" || unit == "x" || unit == "oct")
@@ -237,6 +247,7 @@ public:
     }
 
     void setTooltip (const juce::String& t) { for (auto* b : buttons) b->setTooltip (t); combo.setTooltip (t); }
+    void setAccent (juce::Colour c) { for (auto* b : buttons) b->getProperties().set ("colour", (int) c.getARGB()); repaint(); }
 
 private:
     AtelierProcessor& proc;
@@ -423,25 +434,27 @@ namespace plot
     {
         return dbMin + (double) ((r.getBottom() - y) / r.getHeight()) * (dbMax - dbMin);
     }
-    // Level (dB) of a linear-bin spectrum over the column [f0, f1]: the strongest bin when the
-    // column spans several bins, otherwise a smooth interpolation between neighbouring bins
-    // (so the bass is drawn as a curve, not a staircase).
+    // Level (dB) of a linear-bin spectrum at the column [f0, f1], smoothed over 1/12 octave
+    // (power average) - so curves read like an analyser, not like noise. Where the band is
+    // narrower than a bin (the bass), it interpolates smoothly between neighbouring bins.
     inline float sampleSpectrum (const std::vector<float>& s, double binHz, double f0, double f1)
     {
         if (s.size() < 4 || binHz <= 0.0) return -200.0f;
-        const double k0 = f0 / binHz, k1 = f1 / binHz;
         const int last = (int) s.size() - 1;
-        if ((int) k1 - (int) k0 >= 1)
+        const double fc = std::sqrt (f0 * f1);
+        const double lo = juce::jmin (f0, fc / 1.0293), hi = juce::jmax (f1, fc * 1.0293);   // >= 1/12 octave
+        const double k0 = lo / binHz, k1 = hi / binHz;
+        const int a = juce::jmax (1, (int) std::ceil (k0)), b = juce::jmin (last, (int) std::floor (k1));
+        if (b - a >= 1)
         {
-            float v = -200.0f;
-            for (int k = juce::jmax (1, (int) std::ceil (k0)); k <= juce::jmin (last, (int) k1); ++k) v = juce::jmax (v, s[(size_t) k]);
-            return v;
+            double p = 0.0;
+            for (int k = a; k <= b; ++k) p += std::pow (10.0, s[(size_t) k] * 0.1);
+            return (float) (10.0 * std::log10 (juce::jmax (1e-20, p / (b - a + 1))));
         }
-        const double kc = juce::jlimit (1.0, (double) last - 1.0, std::sqrt (k0 * k1));
+        const double kc = juce::jlimit (1.0, (double) last - 1.0, fc / binHz);
         const int i = (int) kc;
         const double t = kc - i;
-        // cosine interpolation keeps peaks round instead of pointed
-        const double w = 0.5 - 0.5 * std::cos (t * juce::MathConstants<double>::pi);
+        const double w = 0.5 - 0.5 * std::cos (t * juce::MathConstants<double>::pi);   // cosine: round peaks
         return (float) ((1.0 - w) * s[(size_t) i] + w * s[(size_t) i + 1]);
     }
 

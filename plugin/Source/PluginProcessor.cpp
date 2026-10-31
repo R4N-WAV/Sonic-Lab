@@ -11,11 +11,11 @@ namespace
     {
         if (unit == "Hz")
             return v >= 1000.0f ? juce::String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz"
-                                : juce::String (v, v < 100.0f ? 1 : 0) + " Hz";
+                                : numText (v, v < 100.0f ? 1 : 0) + " Hz";
         if (unit == "dB")
             return (v > 0.0f ? "+" : "") + juce::String (v, 1) + " dB";
         if (unit == "deg")
-            return juce::String (v, 0) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+            return juce::String (juce::roundToInt (v)) + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
         if (unit == "s")
             return juce::String (v, 1) + " s";
         return juce::String (v, 2) + (unit.isEmpty() ? "" : " " + unit);

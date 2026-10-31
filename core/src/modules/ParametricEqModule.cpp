@@ -151,6 +151,16 @@ double ParametricEqModule::bandResponseDb (int b, double freq) const
     return gainToDb (m, -200.0);
 }
 
+double ParametricEqModule::bandResponseDbWithGain (int b, double freq, double gainDb) const
+{
+    const double rate = (Phase) (int) getParam (gPhase) == Phase::natural ? fs * 2.0 : fs;
+    const auto d = designBand (b, rate, gainDb, true);
+    double m = 1.0;
+    for (int i = 0; i < d.n; ++i)
+        m *= d.s[i].magnitudeAt (rate, freq);
+    return gainToDb (m, -200.0);
+}
+
 double ParametricEqModule::responseDb (double freq, int view) const
 {
     double db = 0.0;

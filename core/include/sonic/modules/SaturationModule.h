@@ -47,7 +47,10 @@ public:
     // Static transfer curve at the current settings (input = shaper input, full scale).
     double staticCurve (double x) const;
 
+protected:
+    void paramChanged (int index) override;
 private:
+    bool linking = false;
     struct Coeffs
     {
         double c[kMaxHarmonic + 1] {};

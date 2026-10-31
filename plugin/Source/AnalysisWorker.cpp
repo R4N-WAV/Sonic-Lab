@@ -282,7 +282,7 @@ void AnalysisWorker::analyseSlow()
         if (! r.transferAvailable)
             r.transferNote = "Collecting data...";
         else if (! r.transfer.broadband)
-            r.transferNote = "Narrowband excitation (" + juce::String (r.transfer.usableFraction * 100.0, 0)
+            r.transferNote = "Narrowband excitation (" + juce::String (juce::roundToInt (r.transfer.usableFraction * 100.0))
                            + "% of the band excited): the curve is only valid where drawn, and the delay estimate is unreliable. "
                              "Use pink/white noise, a sweep or music for a full response.";
     }

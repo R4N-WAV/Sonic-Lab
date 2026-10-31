@@ -57,6 +57,8 @@ public:
     // view: -1 = all bands, 0 = Left, 1 = Right, 2 = Mid, 3 = Side
     double responseDb (double freq, int view = -1) const;
     double bandResponseDb (int band, double freq) const;
+    // Response of one band if its gain were gainDb (used to draw dynamic-EQ ranges).
+    double bandResponseDbWithGain (int band, double freq, double gainDb) const;
     float dynamicGainDb (int band) const { return dynGain[(size_t) band].load (std::memory_order_relaxed); }
     static const char* slopeName (int index);
 

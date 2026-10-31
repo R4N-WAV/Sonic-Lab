@@ -76,7 +76,7 @@ void InspectorPanel::NodeKnob::paint (juce::Graphics& g)
     g.drawText (mix ? "Mix" : "Block output", r.removeFromTop (16), juce::Justification::centred);
     g.setColour (theme::textDim);
     g.setFont (theme::mono (10.0f));
-    g.drawText (mix ? juce::String (slider.getValue(), 0) + " %" : formatValue (slider.getValue(), "dB"), r, juce::Justification::centred);
+    g.drawText (mix ? juce::String (juce::roundToInt (slider.getValue())) + " %" : formatValue (slider.getValue(), "dB"), r, juce::Justification::centred);
 }
 
 // ------------------------------------------------------------------ Waveform
@@ -181,9 +181,17 @@ void InspectorPanel::buildBlock (sonic::Graph::Node& n)
             const auto& s = m.params()[(size_t) i];
             if (! s.simple || ! m.isParamRelevant (i)) continue;
             if (s.isChoice())
-                addAndMakeVisible (choices.add (new ModuleChoice (ui.proc, m, i)));
+            {
+                auto* c = choices.add (new ModuleChoice (ui.proc, m, i));
+                c->setAccent (blockColour (n.type));
+                addAndMakeVisible (c);
+            }
             else
-                addAndMakeVisible (knobs.add (new ModuleKnob (ui.proc, m, i)));
+            {
+                auto* k = knobs.add (new ModuleKnob (ui.proc, m, i));
+                k->slider.getProperties().set ("arcColour", (int) blockColour (n.type).getARGB());
+                addAndMakeVisible (k);
+            }
         }
         addAndMakeVisible (nodeKnobs.add (new NodeKnob (ui, n.id, true)));
         if (n.type == "dynamics.compressor")

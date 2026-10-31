@@ -8,6 +8,7 @@ class InspectorPanel : public juce::Component, private juce::Timer
 public:
     explicit InspectorPanel (Ui& ui);
     void rebuild();
+    void showAdvanced() { advanced = true; rebuild(); }
     void paint (juce::Graphics&) override;
     void resized() override;
 
