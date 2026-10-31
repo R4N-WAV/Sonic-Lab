@@ -49,7 +49,18 @@ jobs:
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
       - name: Build VST3 + tests
-        run: cmake --build build --config Release --target Atelier_VST3 sonic_core_tests atelier_module_tests atelier_plugin_tests --parallel
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target Atelier_VST3 sonic_core_tests atelier_module_tests atelier_plugin_tests --parallel 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Report compiler errors
+        if: failure()
+        shell: pwsh
+        run: |
+          # Turn compiler/linker errors into annotations so they are visible without the raw log.
+          $errs = Select-String -Path build.log -Pattern "error (C|LNK|MSB)\d+|fatal error" | ForEach-Object { $_.Line.Trim() } | Select-Object -Unique -First 40
+          foreach ($e in $errs) { Write-Output "::error::$($e.Substring(0, [Math]::Min(900, $e.Length)))" }
 
       - name: Core DSP tests
         run: build\Release\sonic_core_tests.exe
