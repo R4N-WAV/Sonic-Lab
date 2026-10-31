@@ -71,11 +71,11 @@ void InspectorPanel::NodeKnob::resized()
 void InspectorPanel::NodeKnob::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().removeFromBottom (32);
-    g.setColour (theme::text);
-    g.setFont (theme::sansMedium (12.5f));
-    g.drawText (mix ? "Mix" : "Block output", r.removeFromTop (16), juce::Justification::centred);
+    g.setColour (theme::ink);
+    g.setFont (theme::heading (17.0f));
+    g.drawText (mix ? "Mix" : "Block output", r.removeFromTop (17), juce::Justification::centred);
     g.setColour (theme::textDim);
-    g.setFont (theme::mono (10.0f));
+    g.setFont (theme::mono (9.5f));
     g.drawText (mix ? juce::String (juce::roundToInt (slider.getValue())) + " %" : formatValue (slider.getValue(), "dB"), r, juce::Justification::centred);
 }
 
@@ -155,7 +155,7 @@ void InspectorPanel::rebuild()
         buildBlock (*n);
     else
     {
-        title = theme::q ("inspector");
+        title = "Inspector"; titleNote = {};
         description = "Select a block in the bridge to shape it.\n\nClick the Input block to choose what you hear: the DAW track, "
                       "the test generator or an audio file. Click Output for A/B listening and output level.";
     }
@@ -166,7 +166,12 @@ void InspectorPanel::rebuild()
 void InspectorPanel::buildBlock (sonic::Graph::Node& n)
 {
     auto& m = *n.module;
-    title = juce::String (n.id - 1).paddedLeft ('0', 2) + "  " + theme::q (juce::String (n.name));
+    title = juce::String (n.name);
+    {
+        const auto order = ui.proc.graph().activeOrder();
+        const auto it = std::find (order.begin(), order.end(), n.id);
+        titleNote = juce::String (juce::CharPointer_UTF8 ("N\xc2\xb0")) + (it == order.end() ? juce::String ("--") : juce::String ((int) (it - order.begin()) + 1).paddedLeft ('0', 2));
+    }
     description = summaryFor (n.type);
     simpleBtn.setVisible (true);
     advancedBtn.setVisible (true);
@@ -276,7 +281,7 @@ void InspectorPanel::buildBlock (sonic::Graph::Node& n)
 
 void InspectorPanel::buildInput()
 {
-    title = theme::q ("input");
+    title = "Input"; titleNote = {};
     description = "What feeds the bridge. DAW track = the audio on this channel. Generator = test signals with exact, "
                   "known content (best for measuring). Audio file = a reference recording.";
     auto& st = ui.proc.apvts;
@@ -365,7 +370,7 @@ void InspectorPanel::buildInput()
 
 void InspectorPanel::buildOutput()
 {
-    title = theme::q ("output");
+    title = "Output"; titleNote = {};
     description = "Listening and level. B plays the unprocessed signal, delayed to line up with A; with gain match on, "
                   "B is matched to A's loudness so you judge tone, not volume.";
     viewport.setVisible (true);
@@ -397,7 +402,7 @@ void InspectorPanel::chooseFile()
         if (safe == nullptr || fc.getResult() == juce::File()) return;
         juce::String err;
         if (! safe->ui.proc.loadFile (fc.getResult(), err))
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not load file", err);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not load file", err, {}, safe.getComponent());
         safe->rebuild();
     });
 }
@@ -490,8 +495,10 @@ void InspectorPanel::resized()
         c->setBounds (r.removeFromTop (28));
         r.removeFromTop (8);
     }
+    if (! grHistory.empty())
+        grArea = r.removeFromBottom (56).withTrimmedTop (4);
     const int total = knobs.size() + nodeKnobs.size();
-    const int cols = total <= 3 ? juce::jmax (1, total) : 3;
+    const int cols = total <= 4 ? juce::jmax (1, total) : 3;
     const int kw = r.getWidth() / cols;
     const int kh = juce::jmin (108, r.getHeight() / juce::jmax (1, (total + cols - 1) / cols));
     int i = 0;
@@ -502,21 +509,24 @@ void InspectorPanel::resized()
     };
     for (auto* k : knobs) place (*k);
     for (auto* k : nodeKnobs) place (*k);
-    if (! grHistory.empty())
-        grArea = r.withTrimmedTop (((total + cols - 1) / cols) * kh + 6).withHeight (48);
 }
 
 void InspectorPanel::paint (juce::Graphics& g)
 {
     theme::drawPanel (g, getLocalBounds());
+    theme::columnRule (g, getLocalBounds());
     auto r = getLocalBounds().reduced (16, 0);
-    g.setColour (theme::text);
-    g.setFont (theme::mono (11.0f));
-    g.drawText (title, r.withHeight (40), juce::Justification::centredLeft, true);
-    const float y = 39.5f;
-    g.setColour (theme::dashed);
-    for (float x = 1.0f; x < (float) getWidth() - 1.0f; x += 6.0f)
-        g.drawLine (x, y, x + 3.0f, y, 1.0f);
+    g.setColour (theme::ink);
+    const auto tf = theme::heading (25.0f);
+    g.setFont (tf);
+    auto tr = r.withHeight (42).withTrimmedRight (150).translated (0, titleNote.isNotEmpty() ? 5 : 0);
+    g.drawText (title, tr, juce::Justification::centredLeft, true);
+    if (titleNote.isNotEmpty())
+    {
+        g.setColour (theme::textFaint);
+        g.setFont (theme::mono (9.5f));
+        g.drawText (titleNote, getLocalBounds().withHeight (14).withTrimmedLeft (16).translated (0, 5), juce::Justification::centredLeft);
+    }
 
     if (description.isNotEmpty())
     {
@@ -527,13 +537,16 @@ void InspectorPanel::paint (juce::Graphics& g)
 
     if (! grHistory.empty() && ! grArea.isEmpty())
     {
-        g.setColour (theme::textDim);
+        g.setColour (theme::textFaint);
         g.setFont (theme::mono (9.5f));
         g.drawText ("GAIN REDUCTION", grArea.withHeight (12), juce::Justification::centredLeft);
-        g.drawText (juce::String (grHistory.back(), 1) + " dB", grArea.withHeight (12), juce::Justification::centredRight);
-        auto a = grArea.withTrimmedTop (14).toFloat();
-        g.setColour (theme::bg);
+        g.setColour (theme::oxblood);
+        g.drawText (juce::String (grHistory.back(), 1) + " DB", grArea.withHeight (12), juce::Justification::centredRight);
+        auto a = grArea.withTrimmedTop (16).toFloat();
+        g.setColour (theme::sheet);
         g.fillRect (a);
+        g.setColour (theme::edge);
+        g.drawRect (a, 1.0f);
         juce::Path p;
         for (size_t k = 0; k < grHistory.size(); ++k)
         {
@@ -541,7 +554,7 @@ void InspectorPanel::paint (juce::Graphics& g)
             const float yy = a.getY() + juce::jlimit (0.0f, 1.0f, -grHistory[k] / 20.0f) * a.getHeight();
             if (k == 0) p.startNewSubPath (x, yy); else p.lineTo (x, yy);
         }
-        g.setColour (theme::beige);
-        g.strokePath (p, juce::PathStrokeType (1.4f));
+        g.setColour (theme::oxblood);
+        g.strokePath (p, juce::PathStrokeType (1.3f));
     }
 }

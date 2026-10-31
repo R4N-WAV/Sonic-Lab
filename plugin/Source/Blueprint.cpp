@@ -1207,6 +1207,12 @@ namespace
     public:
         Dialog (Ui& u, std::function<void()> close) : juce::Thread ("Atelier blueprint export"), ui (u), onClose (std::move (close))
         {
+            for (auto* e : { &nameEd, &objectiveEd })
+            {
+                e->setColour (juce::TextEditor::textColourId, theme::ink);
+                e->setColour (juce::TextEditor::backgroundColourId, theme::card);
+                e->setFont (theme::sans (14.0f));
+            }
             nameEd.setText (ui.proc.projectName(), false);
             objectiveEd.setMultiLine (true, true);
             objectiveEd.setReturnKeyStartsNewLine (true);
@@ -1241,11 +1247,13 @@ namespace
 
         void paint (juce::Graphics& g) override
         {
-            g.fillAll (juce::Colour (0xd0050709));
+            g.fillAll (theme::ink.withAlpha (0.35f));
             auto r = box();
-            g.setColour (theme::shadow);
+            g.setColour (theme::edgeHi);
             g.fillRect (r.translated (6, 6));
-            theme::drawPanel (g, r, "Export blueprint", "Fig. 05 - engineering package for a new plugin");
+            theme::drawPanel (g, r, "Export blueprint", juce::String (juce::CharPointer_UTF8 ("Fig. 05 \xe2\x80\x94 engineering package for a new plugin")));
+            g.setColour (theme::ink);
+            g.drawRect (r, 1);
             g.setColour (theme::textDim);
             g.setFont (theme::mono (9.5f));
             auto in = r.reduced (24, 0);
@@ -1261,7 +1269,7 @@ namespace
             auto pr = juce::Rectangle<int> (in.getX(), exportBtn.getY() - 64, in.getWidth(), 6);
             g.setColour (theme::grid);
             g.fillRect (pr);
-            g.setColour (theme::beige);
+            g.setColour (theme::ink);
             g.fillRect (pr.withWidth ((int) (pr.getWidth() * progress.load())));
             g.setColour (theme::textDim);
             g.setFont (theme::sans (12.5f));
@@ -1352,7 +1360,7 @@ namespace
         juce::TextEditor nameEd, objectiveEd;
         juce::ComboBox rate;
         juce::ToggleButton audioToggle { "Include audio references (WAV)" }, pdfToggle { "Include PDF document" };
-        juce::TextButton folderBtn { "CHOOSE FOLDER..." }, exportBtn { "EXPORT \"BLUEPRINT\"" }, cancelBtn { "CLOSE" }, openBtn { "SHOW IN FOLDER" };
+        juce::TextButton folderBtn { "CHOOSE FOLDER..." }, exportBtn { "Export blueprint" }, cancelBtn { "CLOSE" }, openBtn { "SHOW IN FOLDER" };
         std::unique_ptr<juce::FileChooser> chooser;
         juce::File folder, result, userAudio;
         Options opt;

@@ -21,6 +21,7 @@ public:
     void selectBlock (int id) { ui.select (id); }
     void openBlock (int id) { openEditor (id); }
     void closeBlock() { closeEditor(); }
+    void openExportDialog() { showExport(); }
     void pumpAnalysis() { lastVBlank = 0.0; onVBlank(); }
 
 private:

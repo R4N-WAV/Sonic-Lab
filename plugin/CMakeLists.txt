@@ -44,13 +44,13 @@ target_sources(Atelier PRIVATE
 # them the UI falls back to system fonts.
 file(GLOB ATELIER_FONTS "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/*.ttf")
 list(LENGTH ATELIER_FONTS ATELIER_FONT_COUNT)
-if(ATELIER_FONT_COUNT EQUAL 6)
+if(ATELIER_FONT_COUNT EQUAL 8)
     juce_add_binary_data(AtelierFonts SOURCES ${ATELIER_FONTS})
     set_target_properties(AtelierFonts PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_link_libraries(Atelier PUBLIC AtelierFonts)
     message(STATUS "Atelier: embedding ${ATELIER_FONT_COUNT} fonts")
 else()
-    message(STATUS "Atelier: fonts not found (${ATELIER_FONT_COUNT}/6) - using system fonts")
+    message(STATUS "Atelier: fonts not found (${ATELIER_FONT_COUNT}/8) - using system fonts")
 endif()
 
 target_compile_definitions(Atelier PUBLIC

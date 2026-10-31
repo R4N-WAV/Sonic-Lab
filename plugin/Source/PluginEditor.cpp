@@ -6,7 +6,8 @@ void AtelierEditor::Content::paint (juce::Graphics& g)
     g.fillAll (theme::bg);
     g.setColour (theme::textDim);
     g.setFont (theme::mono (9.0f));
-    g.drawText ("ATELIER - WORK IN PROGRESS - c/o R4N - OSLO", juce::Rectangle<int> (24, kH - 20, 600, 18), juce::Justification::centredLeft);
+    g.setColour (theme::textFaint);
+    g.drawText (juce::String (juce::CharPointer_UTF8 ("ATELIER \xe2\x80\x94 MAISON DE SON \xe2\x80\x94 C/O R4N \xe2\x80\x94 OSLO")), juce::Rectangle<int> (32, kH - 20, 600, 18), juce::Justification::centredLeft);
     g.drawText ("v" JucePlugin_VersionString, juce::Rectangle<int> (kW - 224, kH - 20, 200, 18), juce::Justification::centredRight);
 }
 

@@ -16,84 +16,72 @@ inline juce::String numText (double v, int decimals)
     return decimals <= 0 ? juce::String (juce::roundToInt (v)) : juce::String (v, decimals);
 }
 
-// Atelier visual language, v0.3 ("lights on"):
-// deep slate ground (lifted from near-black), soft rounded panels with depth,
-// a glowing light-blue signal, warm amber for interaction and selection, a beige
-// italic serif wordmark, and one colour per block category. Colour lives in lines,
-// edges, arcs and small fills - never in large bright areas. Off-White details stay:
-// "QUOTED" labels and FIG. captions.
+// Atelier visual language: "Maison" - drawn from the logo.
+// A Paris atelier's pattern-cutting table: warm linen paper, black ink, the logo's camel,
+// and oxblood only for gain reduction / dynamic EQ / warnings. Headings and names are set in
+// the logo's italic serif; technical labels in a typewriter mono; axes are rulers; the Bridge
+// is pattern paper with garment-tag blocks and stitched parallel paths. Square corners,
+// hairline rules, hatching instead of gradients, no glows.
 namespace theme
 {
-    // ground and surfaces
-    const juce::Colour bg        { 0xff0f131b };
-    const juce::Colour panel     { 0xff161c27 };
-    const juce::Colour card      { 0xff1c2432 };   // raised surface (cards, controls)
-    const juce::Colour edge      { 0xff2a3446 };
-    const juce::Colour edgeHi    { 0xff3a4862 };
-    const juce::Colour grid      { 0xff1e2633 };
-    const juce::Colour gridMajor { 0xff2b3547 };
-    const juce::Colour dashed    { 0xff2a3446 };
+    // paper and ink
+    const juce::Colour bg        { 0xffece6da };   // linen paper (ground)
+    const juce::Colour sheet     { 0xfff4f0e8 };   // a lighter sheet laid on the table (plots)
+    const juce::Colour card      { 0xfffbf9f4 };   // garment tag / menus / fields
+    const juce::Colour panel     = bg;
+    const juce::Colour ink       { 0xff1c1916 };
+    const juce::Colour edge      { 0xffcdc4b4 };   // hairline rule
+    const juce::Colour edgeHi    { 0xff8f8676 };
+    const juce::Colour grid      { 0xffded7ca };
+    const juce::Colour gridMajor { 0xffcdc4b4 };
+    const juce::Colour dashed    = edge;
 
-    // text
-    const juce::Colour text      { 0xffd3dbe7 };
-    const juce::Colour textDim   { 0xff8e9aae };
-    const juce::Colour textFaint { 0xff5e6a80 };
-    const juce::Colour light     { 0xffe8edf5 };
+    const juce::Colour text      = ink;
+    const juce::Colour textDim   { 0xff5f574c };
+    const juce::Colour textFaint { 0xff9a9081 };
+    const juce::Colour light     = ink;
 
-    // signal + interaction
-    const juce::Colour signalBlue { 0xff86b6ff };  // output / processed curve
-    const juce::Colour signalDeep { 0xff4f7bd9 };
-    const juce::Colour reference  { 0xff6c7a92 };  // input curve
-    const juce::Colour accent     { 0xfff2a766 };  // interaction, selection, EQ curve
-    const juce::Colour logo       { 0xffd9bf8f };  // wordmark, Input/Output labels
-    const juce::Colour parallel   { 0xffa68cff };  // parallel wires
+    // the logo's camel, deeper for marks that must read on paper
+    const juce::Colour logo      { 0xffb39a6e };
+    const juce::Colour accent    { 0xff94784a };
+    const juce::Colour oxblood   { 0xff8c3b2e };
 
-    // status
-    const juce::Colour good      { 0xff6fd49a };
-    const juce::Colour goodEdge  { 0xff4fa878 };
-    const juce::Colour warn      { 0xffe8b65a };
-    const juce::Colour bad       { 0xffff7a7a };
-    const juce::Colour danger    { 0xffff8a7a };
+    // roles (names kept from earlier versions)
+    const juce::Colour signalBlue = ink;            // output curve, active controls
+    const juce::Colour signalDeep = textDim;
+    const juce::Colour reference  = textFaint;      // input curve (dotted)
+    const juce::Colour parallel   = accent;         // stitched parallel wires
+    const juce::Colour good       { 0xff4f6b4a };
+    const juce::Colour goodEdge   = good;
+    const juce::Colour warn       { 0xff9a6b2a };
+    const juce::Colour bad        = oxblood;
+    const juce::Colour danger     = oxblood;
 
-    // block categories
-    const juce::Colour catCharacter  { 0xfff2a766 };
-    const juce::Colour catDynamics   { 0xffff8a7a };
-    const juce::Colour catTone       { 0xff5ed1c0 };
-    const juce::Colour catSpace      { 0xffa68cff };
-    const juce::Colour catModulation { 0xfff07fc0 };
-    const juce::Colour catPitch      { 0xff9fd86b };
-    const juce::Colour catUtility    { 0xff8c9bb0 };
+    inline juce::Colour categoryColour (const std::string&) { return textDim; }
 
-    inline juce::Colour categoryColour (const std::string& category)
-    {
-        if (category == "Character")  return catCharacter;
-        if (category == "Dynamics")   return catDynamics;
-        if (category == "Tone")       return catTone;
-        if (category == "Space")      return catSpace;
-        if (category == "Modulation") return catModulation;
-        if (category == "Pitch")      return catPitch;
-        return catUtility;
-    }
+    const juce::Colour catCharacter = textDim, catDynamics = textDim, catTone = textDim, catSpace = textDim,
+                       catModulation = textDim, catPitch = textDim, catUtility = textDim;
 
-    // legacy names (earlier panels) mapped onto the v0.3 palette
-    const juce::Colour selFill   { 0xff22324a };
-    const juce::Colour selEdge   = signalBlue;
+    const juce::Colour selFill   = ink;
+    const juce::Colour selEdge   = ink;
     const juce::Colour beige     = accent;
-    const juce::Colour beigeText { 0xffd99a5e };
-    const juce::Colour beigeFill { 0xff2a2420 };
-    const juce::Colour beigeTag  { 0xff33281f };
-    const juce::Colour beigeEdge { 0xff9a7048 };
-    const juce::Colour shadow    { 0x99000000 };
-    const juce::Colour rowSel    { 0xff2a2420 };
+    const juce::Colour beigeText = accent;
+    const juce::Colour beigeFill = card;
+    const juce::Colour beigeTag  = card;
+    const juce::Colour beigeEdge = accent;
+    const juce::Colour shadow    = edge;
+    const juce::Colour rowSel    = sheet;
 
     struct Faces
     {
-        juce::Typeface::Ptr serif, mono, monoMedium, sans, sansMedium, sansSemi;
+        juce::Typeface::Ptr serif, heading, numeral, mono, monoMedium, sans, sansMedium, sansSemi;
         Faces()
         {
            #if ATELIER_HAS_FONTS
             auto load = [] (const void* d, int n) { return juce::Typeface::createSystemTypefaceFor (d, (size_t) n); };
             serif = load (BinaryData::CormorantGaramondSemiBoldItalic_ttf, BinaryData::CormorantGaramondSemiBoldItalic_ttfSize);
+            heading = load (BinaryData::CormorantGaramondMediumItalic_ttf, BinaryData::CormorantGaramondMediumItalic_ttfSize);
+            numeral = load (BinaryData::CormorantGaramondMedium_ttf, BinaryData::CormorantGaramondMedium_ttfSize);
             mono = load (BinaryData::IBMPlexMonoRegular_ttf, BinaryData::IBMPlexMonoRegular_ttfSize);
             monoMedium = load (BinaryData::IBMPlexMonoMedium_ttf, BinaryData::IBMPlexMonoMedium_ttfSize);
             sans = load (BinaryData::InterTightRegular_ttf, BinaryData::InterTightRegular_ttfSize);
@@ -111,139 +99,171 @@ namespace theme
         return juce::Font (juce::FontOptions (fallbackName, h, style));
     }
 
+    // the wordmark (logo weight)
     inline juce::Font serif (float h) { return make (faces().serif, h, "Georgia", juce::Font::italic | juce::Font::bold); }
+    // section titles, block names, button words: the logo's italic at a lighter weight
+    inline juce::Font heading (float h) { return make (faces().heading, h, "Georgia", juce::Font::italic); }
+    // big readout numbers: upright serif
+    inline juce::Font numeral (float h) { return make (faces().numeral, h, "Georgia", juce::Font::plain); }
     inline juce::Font mono (float h) { return make (faces().mono, h, "Consolas", juce::Font::plain); }
     inline juce::Font monoMedium (float h) { return make (faces().monoMedium, h, "Consolas", juce::Font::bold); }
     inline juce::Font sans (float h) { return make (faces().sans, h, "Segoe UI", juce::Font::plain); }
     inline juce::Font sansMedium (float h) { return make (faces().sansMedium, h, "Segoe UI Semibold", juce::Font::plain); }
     inline juce::Font sansSemi (float h) { return make (faces().sansSemi, h, "Segoe UI", juce::Font::bold); }
 
-    // "LABEL" in quotes (Off-White detail)
-    inline juce::String q (const juce::String& s) { return "\"" + s.toUpperCase() + "\""; }
+    // small technical label: upper-case (the mono font does the rest)
+    inline juce::String q (const juce::String& s) { return s.toUpperCase(); }
 
-    constexpr float kPanelRadius = 12.0f;
-    constexpr float kCardRadius = 10.0f;
+    constexpr float kPanelRadius = 0.0f;
+    constexpr float kCardRadius = 0.0f;
 
-    // Soft drop shadow under a rounded rectangle (cheap: a few expanding translucent rounds).
-    inline void softShadow (juce::Graphics& g, juce::Rectangle<float> r, float radius, float spread = 10.0f, float alpha = 0.35f)
+    inline void softShadow (juce::Graphics& g, juce::Rectangle<float> r, float = 0.0f, float = 0.0f, float = 0.0f)
     {
-        for (int i = 3; i >= 1; --i)
-        {
-            const float e = spread * (float) i / 3.0f;
-            g.setColour (juce::Colours::black.withAlpha (alpha / (float) (i + 1)));
-            g.fillRoundedRectangle (r.translated (0.0f, e * 0.6f).expanded (e * 0.5f), radius + e * 0.5f);
-        }
+        g.setColour (edge);
+        g.fillRect (r.translated (3.0f, 3.0f));
     }
 
-    // Panel: rounded, lifted surface with a lighter header band, hairline edge and a
-    // quoted caption + figure note.
+    // Section: a black rule across the top, an italic serif title and a mono figure note.
     inline void drawPanel (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& caption = {},
                            const juce::String& figure = {}, int headerH = 42)
     {
-        const auto r = ri.toFloat().reduced (0.5f);
-        juce::ColourGradient grad (card, 0.0f, r.getY(), panel, 0.0f, r.getY() + 70.0f, false);
-        g.setGradientFill (grad);
-        g.fillRoundedRectangle (r, kPanelRadius);
-        g.setColour (juce::Colours::white.withAlpha (0.045f));
-        g.drawHorizontalLine ((int) r.getY() + 1, r.getX() + kPanelRadius, r.getRight() - kPanelRadius);
-        g.setColour (edge);
-        g.drawRoundedRectangle (r, kPanelRadius, 1.0f);
+        g.setColour (bg);
+        g.fillRect (ri);
+        g.setColour (ink);
+        g.drawHorizontalLine (ri.getY(), (float) ri.getX(), (float) ri.getRight());
         if (caption.isEmpty())
             return;
-        auto h = ri.withHeight (headerH).reduced (16, 0);
-        g.setColour (text);
-        g.setFont (mono (11.0f));
-        const juce::String cap = q (caption);
-        g.drawText (cap, h, juce::Justification::centredLeft);
+        auto h = ri.withHeight (headerH).reduced (16, 0).withTrimmedTop (4);
+        g.setColour (ink);
+        const auto f = heading (26.0f);
+        g.setFont (f);
+        g.drawText (caption, h, juce::Justification::centredLeft);
         if (figure.isNotEmpty())
         {
+            const int w = juce::GlyphArrangement::getStringWidthInt (f, caption);
             g.setColour (textFaint);
             g.setFont (mono (10.0f));
-            const int w = juce::GlyphArrangement::getStringWidthInt (mono (11.0f), cap);
-            g.drawText (figure.toUpperCase(), h.withTrimmedLeft (w + 16), juce::Justification::centredLeft);
+            g.drawText (figure.toUpperCase(), h.withTrimmedLeft (w + 14).withTrimmedTop (4), juce::Justification::centredLeft);
         }
-        g.setColour (edge);
-        g.drawHorizontalLine (ri.getY() + headerH - 1, (float) ri.getX() + 1.0f, (float) ri.getRight() - 1.0f);
     }
 
-    // Card (bridge block, Input/Output): raised, rounded, optional category stripe on the left,
-    // glow ring when selected, dashed edge when not connected.
-    inline void drawCard (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour edgeC, bool selected,
-                          juce::Colour stripe = juce::Colours::transparentBlack, bool dashedEdge = false)
+    // A vertical hairline separating a side column (readout, inspector).
+    inline void columnRule (juce::Graphics& g, juce::Rectangle<int> r)
     {
-        softShadow (g, r, kCardRadius, 12.0f, 0.45f);
-        if (selected)
-        {
-            g.setColour (edgeC.withAlpha (0.16f));
-            g.fillRoundedRectangle (r.expanded (4.0f), kCardRadius + 4.0f);
-        }
-        juce::ColourGradient grad (card.brighter (0.04f), 0.0f, r.getY(), panel, 0.0f, r.getBottom(), false);
-        g.setGradientFill (grad);
-        g.fillRoundedRectangle (r, kCardRadius);
-        if (! stripe.isTransparent())
-        {
-            juce::Path clip;
-            clip.addRoundedRectangle (r, kCardRadius);
-            g.saveState();
-            g.reduceClipRegion (clip);
-            g.setColour (stripe);
-            g.fillRect (r.withWidth (4.0f));
-            g.restoreState();
-        }
+        g.setColour (ink);
+        g.drawVerticalLine (r.getX(), (float) r.getY(), (float) r.getBottom());
+    }
+
+    // Garment tag: paper card, ink hairline (dashed when loose), a flat offset shadow;
+    // selection = camel edge with tailor's corner marks.
+    inline void drawCard (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour edgeC, bool selected,
+                          juce::Colour = juce::Colours::transparentBlack, bool dashedEdge = false)
+    {
+        g.setColour (edge);
+        g.fillRect (r.translated (2.0f, 2.0f));
+        g.setColour (card);
+        g.fillRect (r);
         if (dashedEdge)
         {
             juce::Path outline, d;
-            outline.addRoundedRectangle (r, kCardRadius);
-            const float dash[] = { 5.0f, 4.0f };
-            juce::PathStrokeType (1.2f).createDashedStroke (d, outline, dash, 2);
-            g.setColour (edgeC);
+            outline.addRectangle (r);
+            const float dash[] = { 4.0f, 3.0f };
+            juce::PathStrokeType (1.0f).createDashedStroke (d, outline, dash, 2);
+            g.setColour (textDim);
             g.fillPath (d);
         }
         else
         {
-            g.setColour (edgeC);
-            g.drawRoundedRectangle (r, kCardRadius, selected ? 1.6f : 1.0f);
+            g.setColour (selected ? accent : (edgeC == ink || edgeC == edge ? ink : edgeC));
+            g.drawRect (r, selected ? 1.5f : 1.0f);
+        }
+        if (selected)
+        {
+            g.setColour (accent);
+            const float o = 7.0f, l = 8.0f;
+            auto corner = [&] (float x, float y, float dx, float dy)
+            {
+                g.drawLine (x, y, x + dx * l, y, 1.0f);
+                g.drawLine (x, y, x, y + dy * l, 1.0f);
+            };
+            corner (r.getX() - o, r.getY() - o, 1, 1);
+            corner (r.getRight() + o, r.getY() - o, -1, 1);
+            corner (r.getX() - o, r.getBottom() + o, 1, -1);
+            corner (r.getRight() + o, r.getBottom() + o, -1, -1);
         }
     }
 
-    inline void drawTag (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& t, juce::Colour fg, juce::Colour edgeC, juce::Colour fill)
+    inline void drawTag (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& t, juce::Colour fg, juce::Colour, juce::Colour)
     {
-        g.setColour (fill);
-        g.fillRoundedRectangle (r.toFloat(), 5.0f);
-        g.setColour (edgeC);
-        g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 5.0f, 1.0f);
         g.setColour (fg);
         g.setFont (mono (9.5f));
-        g.drawText (t, r, juce::Justification::centred);
+        g.drawText (t, r, juce::Justification::centredRight);
     }
 
-    inline void cropMarks (juce::Graphics& g, juce::Rectangle<int> r)
-    {
-        g.setColour (textFaint.withAlpha (0.8f));
-        const float x0 = (float) r.getX(), y0 = (float) r.getY(), x1 = (float) r.getRight(), y1 = (float) r.getBottom();
-        g.drawLine (x0 - 9, y0 - 1, x0 - 1, y0 - 1, 1.0f);
-        g.drawLine (x0 - 1, y0 - 9, x0 - 1, y0 - 1, 1.0f);
-        g.drawLine (x1 + 1, y1 + 1, x1 + 9, y1 + 1, 1.0f);
-        g.drawLine (x1 + 1, y1 + 1, x1 + 1, y1 + 9, 1.0f);
-    }
+    inline void cropMarks (juce::Graphics&, juce::Rectangle<int>) {}
 
-    // Glowing curve: wide translucent strokes under a crisp one.
+    // A plain ink line (the old "glow" call sites draw clean strokes now).
     inline void glowStroke (juce::Graphics& g, const juce::Path& p, juce::Colour c, float width)
     {
-        g.setColour (c.withAlpha (0.12f));
-        g.strokePath (p, juce::PathStrokeType (width * 4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour (c.withAlpha (0.25f));
-        g.strokePath (p, juce::PathStrokeType (width * 2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         g.setColour (c);
         g.strokePath (p, juce::PathStrokeType (width, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-    // Vertical gradient fill under a curve (strong near the top, fading to nothing).
-    inline void fadeFill (juce::Graphics& g, const juce::Path& area, juce::Colour c, float top, float bottom, float strength = 0.38f)
+    // Engraving-style diagonal hatching inside a path.
+    inline void hatch (juce::Graphics& g, const juce::Path& area, juce::Colour c, float alpha = 0.22f, float spacing = 5.0f, bool rising = true)
     {
-        juce::ColourGradient grad (c.withAlpha (strength), 0.0f, top, c.withAlpha (0.0f), 0.0f, bottom, false);
-        g.setGradientFill (grad);
-        g.fillPath (area);
+        const auto b = area.getBounds();
+        if (b.isEmpty()) return;
+        g.saveState();
+        g.reduceClipRegion (area);
+        g.setColour (c.withAlpha (alpha));
+        const float h = b.getHeight();
+        for (float x = b.getX() - h; x < b.getRight() + h; x += spacing)
+            if (rising) g.drawLine (x, b.getBottom(), x + h, b.getY(), 0.7f);
+            else g.drawLine (x, b.getY(), x + h, b.getBottom(), 0.8f);
+        g.restoreState();
+    }
+
+    // Former gradient fill under curves: hatching now.
+    inline void fadeFill (juce::Graphics& g, const juce::Path& area, juce::Colour c, float, float, float strength = 0.38f)
+    {
+        hatch (g, area, c, juce::jlimit (0.12f, 0.3f, strength * 0.7f));
+    }
+
+    // A tailor's ruler along the bottom of a log-frequency plot: fine ticks, long ticks at labels.
+    inline void frequencyRuler (juce::Graphics& g, juce::Rectangle<float> plot, std::initializer_list<double> labelled, bool dense)
+    {
+        auto xOf = [&] (double f) { return plot.getX() + (float) (std::log (f / 20.0) / std::log (1000.0)) * plot.getWidth(); };
+        g.setColour (textFaint);
+        const int n = dense ? 300 : 200;
+        for (int i = 0; i <= n; ++i)
+        {
+            const float x = plot.getX() + plot.getWidth() * (float) i / (float) n;
+            g.drawLine (x, plot.getBottom(), x, plot.getBottom() + 3.0f, 0.6f);
+        }
+        g.setFont (mono (9.5f));
+        for (double f : labelled)
+        {
+            const float x = xOf (f);
+            g.setColour (ink);
+            g.drawLine (x, plot.getBottom(), x, plot.getBottom() + 8.0f, 0.9f);
+            g.setColour (textDim);
+            const auto lab = f >= 1000.0 ? (std::fmod (f, 1000.0) == 0.0 ? juce::String ((int) (f / 1000.0)) : juce::String (f / 1000.0, 1)) + "k"
+                                         : juce::String ((int) f);
+            g.drawText (lab, juce::Rectangle<float> (x - 20.0f, plot.getBottom() + 9.0f, 40.0f, 12.0f), juce::Justification::centred);
+        }
+    }
+
+    // A round marker with an italic serif number (EQ bands).
+    inline void numberedHandle (juce::Graphics& g, juce::Point<float> p, int number, bool selected, juce::Colour ring, float r = 10.0f)
+    {
+        g.setColour (selected ? ink : card);
+        g.fillEllipse (p.x - r, p.y - r, r * 2, r * 2);
+        g.setColour (selected ? ink : ring);
+        g.drawEllipse (p.x - r, p.y - r, r * 2, r * 2, 1.3f);
+        g.setColour (selected ? card : ink);
+        g.setFont (heading (r * 1.45f));
+        g.drawText (juce::String (number), juce::Rectangle<float> (p.x - r, p.y - r - 1.0f, r * 2, r * 2), juce::Justification::centred);
     }
 }
 
@@ -254,160 +274,162 @@ public:
     {
         using namespace theme;
         setColour (juce::ResizableWindow::backgroundColourId, bg);
-        setColour (juce::Label::textColourId, text);
-        setColour (juce::Slider::textBoxTextColourId, text);
+        setColour (juce::DocumentWindow::backgroundColourId, bg);
+        setColour (juce::Label::textColourId, ink);
+        setColour (juce::Slider::textBoxTextColourId, ink);
         setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
-        setColour (juce::Slider::textBoxHighlightColourId, accent.withAlpha (0.35f));
-        setColour (juce::TextButton::buttonColourId, card);
-        setColour (juce::TextButton::buttonOnColourId, selFill);
+        setColour (juce::Slider::textBoxHighlightColourId, logo.withAlpha (0.35f));
+        setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        setColour (juce::TextButton::buttonOnColourId, ink);
         setColour (juce::TextButton::textColourOffId, textDim);
-        setColour (juce::TextButton::textColourOnId, signalBlue);
+        setColour (juce::TextButton::textColourOnId, card);
         setColour (juce::ComboBox::backgroundColourId, card);
         setColour (juce::ComboBox::outlineColourId, edge);
-        setColour (juce::ComboBox::textColourId, text);
+        setColour (juce::ComboBox::textColourId, ink);
         setColour (juce::ComboBox::arrowColourId, textDim);
         setColour (juce::PopupMenu::backgroundColourId, card);
-        setColour (juce::PopupMenu::highlightedBackgroundColourId, signalBlue.withAlpha (0.16f));
-        setColour (juce::PopupMenu::textColourId, text);
-        setColour (juce::PopupMenu::highlightedTextColourId, light);
-        setColour (juce::PopupMenu::headerTextColourId, textFaint);
-        setColour (juce::ToggleButton::textColourId, text);
-        setColour (juce::ToggleButton::tickColourId, accent);
+        setColour (juce::PopupMenu::highlightedBackgroundColourId, sheet);
+        setColour (juce::PopupMenu::textColourId, ink);
+        setColour (juce::PopupMenu::highlightedTextColourId, ink);
+        setColour (juce::PopupMenu::headerTextColourId, ink);
+        setColour (juce::ToggleButton::textColourId, ink);
+        setColour (juce::ToggleButton::tickColourId, ink);
         setColour (juce::ToggleButton::tickDisabledColourId, textFaint);
         setColour (juce::TooltipWindow::backgroundColourId, card);
-        setColour (juce::TooltipWindow::textColourId, text);
-        setColour (juce::TooltipWindow::outlineColourId, edgeHi);
-        setColour (juce::TextEditor::backgroundColourId, bg);
+        setColour (juce::TooltipWindow::textColourId, ink);
+        setColour (juce::TooltipWindow::outlineColourId, ink);
+        setColour (juce::TextEditor::backgroundColourId, card);
         setColour (juce::TextEditor::outlineColourId, edge);
         setColour (juce::TextEditor::focusedOutlineColourId, accent);
-        setColour (juce::TextEditor::textColourId, text);
-        setColour (juce::TextEditor::highlightColourId, accent.withAlpha (0.3f));
-        setColour (juce::CaretComponent::caretColourId, accent);
-        setColour (juce::AlertWindow::backgroundColourId, panel);
-        setColour (juce::AlertWindow::textColourId, text);
-        setColour (juce::AlertWindow::outlineColourId, edgeHi);
+        setColour (juce::TextEditor::textColourId, ink);
+        setColour (juce::TextEditor::highlightColourId, logo.withAlpha (0.35f));
+        setColour (juce::TextEditor::highlightedTextColourId, ink);
+        setColour (juce::CaretComponent::caretColourId, ink);
+        setColour (juce::AlertWindow::backgroundColourId, card);
+        setColour (juce::AlertWindow::textColourId, ink);
+        setColour (juce::AlertWindow::outlineColourId, ink);
         setColour (juce::ScrollBar::thumbColourId, edgeHi);
-        setColour (juce::ListBox::backgroundColourId, panel);
-        setColour (juce::ProgressBar::backgroundColourId, card);
-        setColour (juce::ProgressBar::foregroundColourId, signalBlue);
+        setColour (juce::ListBox::backgroundColourId, card);
+        setColour (juce::ProgressBar::backgroundColourId, grid);
+        setColour (juce::ProgressBar::foregroundColourId, ink);
         setDefaultSansSerifTypeface (theme::faces().sans);
     }
 
+    // Button kinds (component properties):
+    //   default  - mono caps in a hairline box; toggled = solid ink with paper text
+    //   "beige"  - the call to action (Export, Apply): solid ink, italic serif word
+    //   "chip"   - palette chip: hairline box, italic serif word
+    //   "link"   - navigation: italic serif word, underlined when toggled
     juce::Font getTextButtonFont (juce::TextButton& b, int h) override
     {
-        if ((bool) b.getProperties().getWithDefault ("chip", false)) return theme::sans (12.0f);
-        return theme::mono (juce::jmin (11.0f, (float) h * 0.45f));
+        if ((bool) b.getProperties().getWithDefault ("beige", false)) return theme::heading (juce::jmin (20.0f, (float) h * 0.55f));
+        if ((bool) b.getProperties().getWithDefault ("chip", false)) return theme::heading (15.5f);
+        if ((bool) b.getProperties().getWithDefault ("link", false)) return theme::heading (20.0f);
+        return theme::mono (juce::jmin (10.5f, (float) h * 0.42f));
     }
     juce::Font getComboBoxFont (juce::ComboBox&) override { return theme::sans (13.0f); }
     juce::Font getPopupMenuFont() override { return theme::sans (13.0f); }
     juce::Font getLabelFont (juce::Label&) override { return theme::sans (13.0f); }
     juce::Font getAlertWindowMessageFont() override { return theme::sans (14.0f); }
-    juce::Font getAlertWindowTitleFont() override { return theme::sansSemi (16.0f); }
-
-    // Buttons: rounded; toggled = tinted with their colour ("colour" property, default signal blue);
-    // "beige" = the warm call-to-action style (Export); "chip" = palette chip with a category dot.
-    static juce::Colour buttonColour (juce::Button& b)
-    {
-        if (b.getProperties().contains ("colour")) return juce::Colour ((juce::uint32) (int) b.getProperties()["colour"]);
-        return theme::signalBlue;
-    }
+    juce::Font getAlertWindowTitleFont() override { return theme::heading (24.0f); }
+    juce::Font getAlertWindowFont() override { return theme::sans (13.0f); }
 
     void drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool hi, bool down) override
     {
-        auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-        const float rad = juce::jmin (7.0f, r.getHeight() * 0.3f);
+        auto r = b.getLocalBounds().toFloat();
         const bool on = b.getToggleState();
-        const bool warm = (bool) b.getProperties().getWithDefault ("beige", false);
-        const auto c = warm ? theme::accent : buttonColour (b);
-        if (warm)
+        if ((bool) b.getProperties().getWithDefault ("link", false))
+            return;
+        if ((bool) b.getProperties().getWithDefault ("beige", false))
         {
-            juce::ColourGradient grad (c.withAlpha (down ? 0.34f : (hi ? 0.28f : 0.22f)), 0.0f, r.getY(), c.withAlpha (0.07f), 0.0f, r.getBottom(), false);
-            g.setGradientFill (grad);
-            g.fillRoundedRectangle (r, rad);
-            g.setColour (c);
-            g.drawRoundedRectangle (r, rad, 1.0f);
+            g.setColour (down ? theme::textDim : (hi ? juce::Colour (0xff2e2a25) : theme::ink));
+            g.fillRect (r);
             return;
         }
-        juce::Colour fill = on ? c.withAlpha (0.14f) : theme::card;
-        if (down) fill = fill.brighter (0.08f);
-        else if (hi) fill = on ? c.withAlpha (0.2f) : theme::card.brighter (0.06f);
-        g.setColour (fill);
-        g.fillRoundedRectangle (r, rad);
-        g.setColour (on ? c.withAlpha (0.9f) : (hi ? theme::edgeHi : theme::edge));
-        g.drawRoundedRectangle (r, rad, 1.0f);
+        if (on)
+        {
+            g.setColour (theme::ink);
+            g.fillRect (r);
+            return;
+        }
+        if (hi || down)
+        {
+            g.setColour (theme::card);
+            g.fillRect (r);
+        }
+        g.setColour (hi ? theme::ink : theme::edge);
+        g.drawRect (r, 1.0f);
     }
 
     void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool hi, bool) override
     {
         const bool warm = (bool) b.getProperties().getWithDefault ("beige", false);
-        const bool chip = (bool) b.getProperties().getWithDefault ("chip", false);
-        auto area = b.getLocalBounds().reduced (4, 0);
-        if (chip && b.getProperties().contains ("dot"))
-        {
-            const juce::Colour dot ((juce::uint32) (int) b.getProperties()["dot"]);
-            g.setColour (dot);
-            g.fillEllipse ((float) area.getX() + 6.0f, (float) area.getCentreY() - 3.0f, 6.0f, 6.0f);
-            area.removeFromLeft (14);
-        }
-        juce::Colour c = warm ? theme::accent : (b.getToggleState() ? buttonColour (b) : (chip || hi ? theme::text : theme::textDim));
+        const bool link = (bool) b.getProperties().getWithDefault ("link", false);
+        const bool on = b.getToggleState();
+        juce::Colour c = warm ? theme::card : (on && ! link ? theme::card : (hi || link || (bool) b.getProperties().getWithDefault ("chip", false) ? theme::ink : theme::textDim));
+        if (link && b.getProperties().contains ("colour")) c = juce::Colour ((juce::uint32) (int) b.getProperties()["colour"]);
         g.setColour (c.withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.4f));
-        g.setFont (getTextButtonFont (b, b.getHeight()));
-        g.drawFittedText (b.getButtonText(), area, juce::Justification::centred, 1);
+        const auto f = getTextButtonFont (b, b.getHeight());
+        g.setFont (f);
+        auto area = b.getLocalBounds().reduced (link ? 0 : 4, 0);
+        g.drawFittedText (b.getButtonText(), area, link ? juce::Justification::centredLeft : juce::Justification::centred, 1);
+        if (link && (on || hi))
+        {
+            const int w = juce::jmin (area.getWidth(), juce::GlyphArrangement::getStringWidthInt (f, b.getButtonText()));
+            g.drawHorizontalLine (area.getCentreY() + (int) (f.getHeight() * 0.42f), (float) area.getX(), (float) (area.getX() + w));
+        }
     }
 
     void drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box) override
     {
-        auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (0.5f);
+        auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
         g.setColour (theme::card);
-        g.fillRoundedRectangle (r, 6.0f);
-        g.setColour (box.isMouseOver (true) ? theme::edgeHi : theme::edge);
-        g.drawRoundedRectangle (r, 6.0f, 1.0f);
+        g.fillRect (r);
+        g.setColour (box.isMouseOver (true) ? theme::ink : theme::edge);
+        g.drawRect (r, 1.0f);
         juce::Path p;
         const float cx = (float) w - 13.0f, cy = (float) h * 0.5f;
         p.startNewSubPath (cx - 4, cy - 2);
         p.lineTo (cx, cy + 2);
         p.lineTo (cx + 4, cy - 2);
-        g.setColour (theme::textDim);
-        g.strokePath (p, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour (theme::ink);
+        g.strokePath (p, juce::PathStrokeType (1.1f));
     }
 
-    // Knobs: arc in the control's colour ("arcColour" property; "beige" = warm), soft glow,
-    // round caps, a raised cap and a pointer.
+    // Knob = a watch dial: paper face with an ink rim, 11 ticks around it, the value as a
+    // camel arc just outside the rim and an ink hand.
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider& s) override
     {
         const float size = (float) juce::jmin (w, h);
-        auto r = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).withSizeKeepingCentre (size, size).reduced (5.0f);
+        auto r = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).withSizeKeepingCentre (size, size).reduced (size * 0.16f);
         const float cx = r.getCentreX(), cy = r.getCentreY(), rad = r.getWidth() * 0.5f;
-        const float stroke = juce::jmax (3.0f, rad * 0.13f);
-        juce::Colour arcC = (bool) s.getProperties().getWithDefault ("beige", false) ? theme::accent : theme::signalBlue;
-        if (s.getProperties().contains ("arcColour")) arcC = juce::Colour ((juce::uint32) (int) s.getProperties()["arcColour"]);
-        const auto caps = juce::PathStrokeType (stroke, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
-
-        juce::Path track;
-        track.addCentredArc (cx, cy, rad - stroke * 0.5f, rad - stroke * 0.5f, 0.0f, a0, a1, true);
-        g.setColour (theme::edge);
-        g.strokePath (track, caps);
-
+        const bool inkArc = s.getProperties().contains ("inkArc");
+        // ticks
+        for (int k = 0; k <= 10; ++k)
+        {
+            const float a = a0 + (a1 - a0) * (float) k / 10.0f;
+            const float r1 = rad + 4.0f, r2 = rad + ((k % 5 == 0) ? 9.0f : 6.5f);
+            g.setColour (theme::textDim);
+            g.drawLine (cx + std::sin (a) * r1, cy - std::cos (a) * r1, cx + std::sin (a) * r2, cy - std::cos (a) * r2, 0.8f);
+        }
+        // value arc
         const double zero = (s.getMinimum() < 0.0 && s.getMaximum() > 0.0) ? 0.0 : s.getMinimum();
         const float az = a0 + (float) s.valueToProportionOfLength (zero) * (a1 - a0);
         const float av = a0 + pos * (a1 - a0);
         juce::Path val;
-        val.addCentredArc (cx, cy, rad - stroke * 0.5f, rad - stroke * 0.5f, 0.0f, juce::jmin (az, av), juce::jmax (az, av), true);
-        g.setColour (arcC.withAlpha (0.22f));
-        g.strokePath (val, juce::PathStrokeType (stroke * 2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour (s.isEnabled() ? arcC : theme::textFaint);
-        g.strokePath (val, caps);
-
-        const float inner = rad * 0.64f;
-        juce::ColourGradient capGrad (theme::card.brighter (0.12f), cx, cy - inner, theme::panel, cx, cy + inner, false);
-        g.setGradientFill (capGrad);
-        g.fillEllipse (cx - inner, cy - inner, inner * 2, inner * 2);
-        g.setColour (theme::edgeHi);
-        g.drawEllipse (cx - inner, cy - inner, inner * 2, inner * 2, 1.0f);
-        g.setColour (theme::light);
-        const float px = cx + std::sin (av) * inner * 0.78f, py = cy - std::cos (av) * inner * 0.78f;
-        g.drawLine (cx + std::sin (av) * inner * 0.25f, cy - std::cos (av) * inner * 0.25f, px, py, 2.0f);
+        val.addCentredArc (cx, cy, rad + 4.0f, rad + 4.0f, 0.0f, juce::jmin (az, av), juce::jmax (az, av), true);
+        g.setColour (s.isEnabled() ? (inkArc ? theme::ink : theme::accent) : theme::textFaint);
+        g.strokePath (val, juce::PathStrokeType (2.0f));
+        // face
+        g.setColour (theme::card);
+        g.fillEllipse (cx - rad, cy - rad, rad * 2, rad * 2);
+        g.setColour (theme::ink);
+        g.drawEllipse (cx - rad, cy - rad, rad * 2, rad * 2, 1.0f);
+        // hand
+        g.drawLine (cx + std::sin (av) * rad * 0.22f, cy - std::cos (av) * rad * 0.22f,
+                    cx + std::sin (av) * (rad - 3.5f), cy - std::cos (av) * (rad - 3.5f), 1.6f);
+        g.fillEllipse (cx - 1.8f, cy - 1.8f, 3.6f, 3.6f);
     }
 
     void drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float, float,
@@ -418,44 +440,49 @@ public:
             LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, 0, 0, style, s);
             return;
         }
-        juce::Colour c = theme::signalBlue;
-        if (s.getProperties().contains ("arcColour")) c = juce::Colour ((juce::uint32) (int) s.getProperties()["arcColour"]);
-        else if ((bool) s.getProperties().getWithDefault ("beige", false)) c = theme::accent;
         const float cy = (float) y + (float) h * 0.5f;
         g.setColour (theme::edge);
-        g.fillRoundedRectangle ((float) x, cy - 2.0f, (float) w, 4.0f, 2.0f);
+        g.drawLine ((float) x, cy, (float) (x + w), cy, 1.0f);
+        // ruler ticks
+        for (int k = 0; k <= 10; ++k)
+        {
+            const float tx = (float) x + (float) w * (float) k / 10.0f;
+            g.drawLine (tx, cy + 3.0f, tx, cy + (k % 5 == 0 ? 7.0f : 5.0f), 0.7f);
+        }
         const double zero = (s.getMinimum() < 0.0 && s.getMaximum() > 0.0) ? 0.0 : s.getMinimum();
         const float zx = (float) s.getPositionOfValue (zero);
-        g.setColour (c);
-        g.fillRoundedRectangle (juce::jmin (zx, pos), cy - 2.0f, std::abs (pos - zx), 4.0f, 2.0f);
-        g.setColour (c.withAlpha (0.25f));
-        g.fillEllipse (pos - 8.0f, cy - 8.0f, 16.0f, 16.0f);
-        g.setColour (theme::light);
-        g.fillEllipse (pos - 5.0f, cy - 5.0f, 10.0f, 10.0f);
+        g.setColour (theme::ink);
+        g.drawLine (juce::jmin (zx, pos), cy, juce::jmax (zx, pos), cy, 2.0f);
+        juce::Path d;
+        d.addRectangle (-4.0f, -4.0f, 8.0f, 8.0f);
+        d.applyTransform (juce::AffineTransform::rotation (juce::MathConstants<float>::pi * 0.25f).translated (pos, cy));
+        g.setColour (theme::card);
+        g.fillPath (d);
+        g.setColour (theme::ink);
+        g.strokePath (d, juce::PathStrokeType (1.2f));
     }
 
     juce::Label* createSliderTextBox (juce::Slider& s) override
     {
         auto* l = LookAndFeel_V4::createSliderTextBox (s);
         l->setFont (theme::mono (10.5f));
-        l->setColour (juce::Label::textColourId, theme::textDim);
+        l->setColour (juce::Label::textColourId, theme::ink);
+        l->setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        l->setColour (juce::Label::outlineColourId, theme::edge);
         l->setJustificationType (juce::Justification::centred);
         return l;
     }
 
-    int getSliderThumbRadius (juce::Slider&) override { return 7; }
+    int getSliderThumbRadius (juce::Slider&) override { return 6; }
 
-    // ---- popup menus: same universe as the panels ----
+    // ---- popup menus: a tag of paper with an ink edge and an italic title ----
     void drawPopupMenuBackgroundWithOptions (juce::Graphics& g, int w, int h, const juce::PopupMenu::Options&) override
     {
         auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
-        g.setColour (theme::bg);
+        g.setColour (theme::card);
         g.fillRect (r);
-        juce::ColourGradient grad (theme::card.brighter (0.05f), 0.0f, 0.0f, theme::panel, 0.0f, (float) h, false);
-        g.setGradientFill (grad);
-        g.fillRoundedRectangle (r.reduced (0.5f), 9.0f);
-        g.setColour (theme::edgeHi);
-        g.drawRoundedRectangle (r.reduced (0.5f), 9.0f, 1.0f);
+        g.setColour (theme::ink);
+        g.drawRect (r, 1.0f);
     }
 
     int getPopupMenuBorderSizeWithOptions (const juce::PopupMenu::Options&) override { return 6; }
@@ -464,8 +491,8 @@ public:
                                                const juce::PopupMenu::Options&) override
     {
         if (isSeparator) { w = 50; h = 11; return; }
-        h = 28;
-        w = juce::jmax (200, juce::GlyphArrangement::getStringWidthInt (theme::sans (13.0f), text) + 90);
+        h = 27;
+        w = juce::jmax (210, juce::GlyphArrangement::getStringWidthInt (theme::sans (13.0f), text) + 96);
     }
 
     void drawPopupMenuItemWithOptions (juce::Graphics& g, const juce::Rectangle<int>& area, bool highlighted, const juce::PopupMenu::Item& item,
@@ -474,24 +501,25 @@ public:
         if (item.isSeparator)
         {
             g.setColour (theme::edge);
-            g.drawHorizontalLine (area.getCentreY(), (float) area.getX() + 8.0f, (float) area.getRight() - 8.0f);
+            g.drawHorizontalLine (area.getCentreY(), (float) area.getX() + 10.0f, (float) area.getRight() - 10.0f);
             return;
         }
-        auto r = area.reduced (4, 1).toFloat();
         if (highlighted && item.isEnabled)
         {
-            g.setColour (theme::signalBlue.withAlpha (0.14f));
-            g.fillRoundedRectangle (r, 6.0f);
+            g.setColour (theme::sheet);
+            g.fillRect (area);
+            g.setColour (theme::ink);
+            g.fillRect (area.getX(), area.getY() + 5, 2, area.getHeight() - 10);
         }
-        auto t = r.toNearestInt().reduced (10, 0);
-        juce::Colour c = item.colour.isTransparent() ? theme::text : item.colour;
+        auto t = area.reduced (12, 0);
+        juce::Colour c = item.colour.isTransparent() || item.colour == theme::textDim ? theme::ink : item.colour;
         if (! item.isEnabled) c = theme::textFaint;
         if (item.isTicked)
         {
-            g.setColour (theme::accent);
+            g.setColour (theme::ink);
             g.fillEllipse ((float) t.getX(), (float) t.getCentreY() - 3.0f, 6.0f, 6.0f);
         }
-        t.removeFromLeft (14);
+        t.removeFromLeft (12);
         if (item.subMenu != nullptr)
         {
             juce::Path p;
@@ -499,8 +527,8 @@ public:
             p.startNewSubPath (ax - 3.0f, ay - 4.0f);
             p.lineTo (ax + 1.0f, ay);
             p.lineTo (ax - 3.0f, ay + 4.0f);
-            g.setColour (theme::textDim);
-            g.strokePath (p, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (theme::ink);
+            g.strokePath (p, juce::PathStrokeType (1.1f));
         }
         if (item.shortcutKeyDescription.isNotEmpty())
         {
@@ -516,21 +544,27 @@ public:
     void drawPopupMenuSectionHeaderWithOptions (juce::Graphics& g, const juce::Rectangle<int>& area, const juce::String& name,
                                                 const juce::PopupMenu::Options&) override
     {
-        g.setColour (theme::accent);
-        g.setFont (theme::mono (9.5f));
-        g.drawText (name.toUpperCase(), area.reduced (14, 0).withTrimmedTop (4), juce::Justification::centredLeft);
+        auto r = area.reduced (12, 0);
+        g.setColour (theme::ink);
+        g.setFont (theme::heading (18.0f));
+        // section headers arrive upper-cased from older call sites: show them as titles
+        auto title = name.trim();
+        if (title == title.toUpperCase()) title = title.substring (0, 1) + title.substring (1).toLowerCase();
+        g.drawText (title.removeCharacters ("\""), r, juce::Justification::centredLeft);
+        g.setColour (theme::edge);
+        g.drawHorizontalLine (area.getBottom() - 1, (float) area.getX() + 10.0f, (float) area.getRight() - 10.0f);
     }
 
     void drawTooltip (juce::Graphics& g, const juce::String& t, int w, int h) override
     {
         auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
         g.setColour (theme::card);
-        g.fillRoundedRectangle (r, 7.0f);
-        g.setColour (theme::edgeHi);
-        g.drawRoundedRectangle (r.reduced (0.5f), 7.0f, 1.0f);
+        g.fillRect (r);
+        g.setColour (theme::ink);
+        g.drawRect (r, 1.0f);
         juce::AttributedString s;
         s.setJustification (juce::Justification::centredLeft);
-        s.append (t, theme::sans (12.5f), theme::text);
+        s.append (t, theme::sans (12.5f), theme::ink);
         juce::TextLayout tl;
         tl.createLayoutWithBalancedLineLengths (s, (float) w - 20.0f);
         tl.draw (g, r.reduced (10.0f, 6.0f));
@@ -539,11 +573,26 @@ public:
     juce::Rectangle<int> getTooltipBounds (const juce::String& t, juce::Point<int> pos, juce::Rectangle<int> parent) override
     {
         juce::AttributedString s;
-        s.append (t, theme::sans (12.5f), theme::text);
+        s.append (t, theme::sans (12.5f), theme::ink);
         juce::TextLayout tl;
         tl.createLayoutWithBalancedLineLengths (s, 340.0f);
         const int w = (int) tl.getWidth() + 22, h = (int) tl.getHeight() + 14;
         return juce::Rectangle<int> (pos.x > parent.getCentreX() ? pos.x - (w + 12) : pos.x + 18,
                                      pos.y > parent.getCentreY() ? pos.y - (h + 8) : pos.y + 16, w, h).constrainedWithin (parent);
     }
+
+    void drawTextEditorOutline (juce::Graphics& g, int w, int h, juce::TextEditor& e) override
+    {
+        g.setColour (e.hasKeyboardFocus (true) ? theme::accent : theme::edge);
+        g.drawRect (0, 0, w, h, e.hasKeyboardFocus (true) ? 1 : 1);
+    }
+
+    void fillTextEditorBackground (juce::Graphics& g, int w, int h, juce::TextEditor& e) override
+    {
+        g.setColour (e.findColour (juce::TextEditor::backgroundColourId));
+        g.fillRect (0, 0, w, h);
+    }
 };
+
+// For top-level dialogs (they are not children of the editor): lives as long as the plugin binary.
+inline AtelierLookAndFeel& dialogLookAndFeel() { static AtelierLookAndFeel l; return l; }

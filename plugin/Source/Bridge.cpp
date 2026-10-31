@@ -76,8 +76,8 @@ BridgePanel::Palette::Palette (BridgePanel& o) : owner (o)
 void BridgePanel::Palette::paint (juce::Graphics& g)
 {
     g.setColour (theme::textFaint);
-    g.setFont (theme::mono (10.0f));
-    g.drawText ("+ ADD", getLocalBounds().withWidth (48), juce::Justification::centredLeft);
+    g.setFont (theme::mono (9.5f));
+    g.drawText (juce::String (juce::CharPointer_UTF8 ("ADD â")), getLocalBounds().withWidth (48), juce::Justification::centredLeft);
 }
 
 void BridgePanel::Palette::mouseDrag (const juce::MouseEvent& e)
@@ -114,7 +114,7 @@ void BridgePanel::Palette::resized()
     int x = r.getX();
     for (auto* b : chips)
     {
-        const int w = juce::GlyphArrangement::getStringWidthInt (theme::sans (12.0f), b->getButtonText()) + 28;
+        const int w = juce::GlyphArrangement::getStringWidthInt (theme::heading (15.5f), b->getButtonText()) + 20;
         b->setBounds (x, r.getCentreY() - 14, w, 28);
         x += w + 4;
     }
@@ -539,6 +539,7 @@ void BridgePanel::showNodeMenu (int id)
             case 2:
             {
                 auto* w = new juce::AlertWindow ("Rename block", "", juce::MessageBoxIconType::NoIcon);
+                w->setLookAndFeel (&dialogLookAndFeel());
                 w->addTextEditor ("name", juce::String (node->name));
                 w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
                 w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -928,11 +929,11 @@ void BridgePanel::timerCallback()
 
 void BridgePanel::drawPort (juce::Graphics& g, juce::Point<float> p, juce::Colour c, bool hot)
 {
-    const float r = hot ? 6.5f : 5.0f;
+    const float r = hot ? 6.0f : 4.5f;
     g.setColour (theme::bg);
     g.fillEllipse (p.x - r, p.y - r, r * 2, r * 2);
     g.setColour (c);
-    g.drawEllipse (p.x - r, p.y - r, r * 2, r * 2, 1.8f);
+    g.drawEllipse (p.x - r, p.y - r, r * 2, r * 2, 1.2f);
 }
 
 void BridgePanel::drawIo (juce::Graphics& g, bool input)
@@ -940,40 +941,46 @@ void BridgePanel::drawIo (juce::Graphics& g, bool input)
     const int id = input ? Graph::kInputId : Graph::kOutputId;
     auto r = cardRect (id);
     const bool sel = ui.selected == id;
-    theme::drawCard (g, r, sel ? theme::accent : theme::edgeHi, sel);
+    g.setColour (theme::bg);
+    g.fillRect (r);
+    g.setColour (sel ? theme::accent : theme::ink);
+    g.drawRect (r, sel ? 1.5f : 1.0f);
     auto t = r.reduced (12.0f, 10.0f);
-    g.setColour (theme::logo);
-    g.setFont (theme::mono (10.0f));
-    g.drawText (theme::q (input ? "input" : "output"), t.removeFromTop (16.0f), juce::Justification::centredLeft);
-    g.setColour (theme::text);
-    g.setFont (theme::sansSemi (14.0f));
+    g.setColour (theme::accent);
+    g.setFont (theme::mono (9.0f));
+    g.drawText (input ? "INPUT" : "OUTPUT", t.removeFromTop (14.0f), juce::Justification::centredLeft);
+    g.setColour (theme::ink);
+    g.setFont (theme::heading (21.0f));
     juce::String title = "To DAW";
     if (input)
     {
         const auto src = ui.proc.source();
         title = src == AtelierProcessor::Source::generator ? "Generator" : src == AtelierProcessor::Source::file ? "Audio file" : "DAW track";
     }
-    g.drawText (title, t.removeFromTop (22.0f), juce::Justification::centredLeft);
-    g.setFont (theme::mono (9.5f));
+    g.drawText (title, t.removeFromTop (26.0f), juce::Justification::centredLeft);
+    g.setFont (theme::mono (9.0f));
+    g.setColour (theme::textDim);
     if (input)
     {
         const char* names[] = { "DAW", "GEN", "FILE" };
         juce::String line;
         for (int i = 0; i < 3; ++i)
             line << ((int) ui.proc.source() == i ? juce::String (juce::CharPointer_UTF8 ("\xe2\x97\x8f ")) : juce::String (juce::CharPointer_UTF8 ("\xe2\x97\x8b "))) << names[i] << "  ";
-        g.setColour (theme::textDim);
         g.drawText (line, t.removeFromTop (14.0f), juce::Justification::centredLeft);
     }
     else
     {
-        g.setColour (theme::textDim);
         g.drawText ("TRIM " + ui.proc.apvts.getParameter ("io.out_trim_db")->getCurrentValueAsText().toUpperCase(), t.removeFromTop (14.0f), juce::Justification::centredLeft);
         g.drawText (ui.proc.isBypassed() ? "LISTENING: B (DRY)" : "LISTENING: A", t.removeFromTop (14.0f), juce::Justification::centredLeft);
-        g.drawText ("LATENCY " + juce::String (ui.proc.currentLatency()) + " SMP", t.removeFromTop (14.0f), juce::Justification::centredLeft);
     }
     auto& m = input ? ui.proc.inputMeter : ui.proc.outputMeter;
-    drawMiniMeter (g, r.reduced (12.0f, 0).withY (r.getBottom() - 14.0f).withHeight (5.0f),
-                   juce::jmax (m.rms[0].load(), m.rms[1].load()) * 1.414f);
+    auto meter = r.reduced (12.0f, 0).withY (r.getBottom() - 13.0f).withHeight (4.0f);
+    g.setColour (theme::grid);
+    g.fillRect (meter);
+    const float lvl = juce::jmax (m.rms[0].load(), m.rms[1].load()) * 1.414f;
+    const float db = juce::jlimit (-60.0f, 0.0f, juce::Decibels::gainToDecibels (lvl, -60.0f));
+    g.setColour (lvl >= 1.0f ? theme::oxblood : theme::ink);
+    g.fillRect (meter.withWidth (meter.getWidth() * (db + 60.0f) / 60.0f));
 }
 
 void BridgePanel::drawCard (juce::Graphics& g, int id)
@@ -985,66 +992,58 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
     const bool sel = ui.selected == id;
     const bool on = n->enabled.load();
     const bool loose = ! isConnected (id);
-    const float alpha = on ? 1.0f : 0.5f;
-    const auto cat = typeColour (n->type);
+    const float alpha = on ? 1.0f : 0.45f;
 
-    theme::drawCard (g, r, sel ? cat : (loose ? theme::edge.brighter (0.2f) : theme::edge), sel, cat.withMultipliedAlpha (alpha), loose);
+    theme::drawCard (g, r, theme::ink, sel, juce::Colours::transparentBlack, loose);
 
-    auto t = r.reduced (12.0f, 10.0f).withTrimmedLeft (4.0f);
-    auto top = t.removeFromTop (14.0f);
-    g.setColour (cat.withMultipliedAlpha (alpha));
-    g.setFont (theme::mono (9.5f));
-    g.drawText (stageText (ui.proc.graph(), id) + "  " + typeLabel (n->type), top, juce::Justification::centredLeft);
-    const auto dot = juce::Rectangle<float> (r.getRight() - 18.0f, r.getY() + 10.0f, 8.0f, 8.0f);
-    if (on)
-    {
-        g.setColour (theme::good.withAlpha (0.35f));
-        g.fillEllipse (dot.expanded (2.5f));
-    }
-    g.setColour (on ? theme::good : theme::textFaint);
-    g.fillEllipse (dot);
+    auto t = r.reduced (12.0f, 10.0f);
+    auto top = t.removeFromTop (13.0f);
+    g.setColour (theme::textDim.withMultipliedAlpha (alpha));
+    g.setFont (theme::mono (9.0f));
+    g.drawText (juce::String (juce::CharPointer_UTF8 ("N\xc2\xb0")) + stageText (ui.proc.graph(), id) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + typeLabel (n->type),
+                top, juce::Justification::centredLeft, true);
+    // enable dot: filled = on, hollow = bypassed
+    const auto dot = juce::Rectangle<float> (r.getRight() - 18.0f, r.getY() + 10.0f, 7.0f, 7.0f);
+    g.setColour (theme::ink);
+    if (on) g.fillEllipse (dot); else g.drawEllipse (dot, 1.0f);
 
-    t.removeFromTop (4.0f);
-    g.setColour (theme::text.withMultipliedAlpha (alpha));
-    g.setFont (theme::sansSemi (15.0f));
-    g.drawText (juce::String (n->name), t.removeFromTop (20.0f), juce::Justification::centredLeft, true);
+    t.removeFromTop (2.0f);
+    g.setColour (theme::ink.withMultipliedAlpha (alpha));
+    g.setFont (theme::heading (22.0f));
+    g.drawText (juce::String (n->name), t.removeFromTop (26.0f), juce::Justification::centredLeft, true);
 
     // bottom row: mix ring + info
-    auto bottom = juce::Rectangle<float> (r.getX() + 10.0f, r.getBottom() - 36.0f, r.getWidth() - 18.0f, 30.0f);
-    auto ring = bottom.removeFromLeft (30.0f).reduced (3.0f);
+    auto bottom = juce::Rectangle<float> (r.getX() + 10.0f, r.getBottom() - 34.0f, r.getWidth() - 18.0f, 28.0f);
+    auto ring = bottom.removeFromLeft (26.0f).reduced (3.0f);
     const float mix = n->mix.load();
-    juce::Path track, val;
     const float a0 = juce::MathConstants<float>::pi * 1.25f, a1 = juce::MathConstants<float>::pi * 2.75f;
-    track.addCentredArc (ring.getCentreX(), ring.getCentreY(), 10.0f, 10.0f, 0.0f, a0, a1, true);
-    val.addCentredArc (ring.getCentreX(), ring.getCentreY(), 10.0f, 10.0f, 0.0f, a0, a0 + mix * (a1 - a0), true);
-    g.setColour (theme::grid);
-    g.strokePath (track, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    g.setColour (cat.withMultipliedAlpha (alpha));
-    g.strokePath (val, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    juce::Path val;
+    val.addCentredArc (ring.getCentreX(), ring.getCentreY(), 8.0f, 8.0f, 0.0f, a0, a0 + mix * (a1 - a0), true);
+    g.setColour (theme::edge);
+    g.drawEllipse (ring.getCentreX() - 8.0f, ring.getCentreY() - 8.0f, 16.0f, 16.0f, 1.0f);
+    g.setColour (theme::accent.withMultipliedAlpha (alpha));
+    g.strokePath (val, juce::PathStrokeType (2.0f));
     g.setColour (theme::textDim.withMultipliedAlpha (alpha));
-    g.setFont (theme::mono (10.0f));
-    g.drawText ("MIX " + juce::String (juce::roundToInt (mix * 100)) + "%", bottom.removeFromLeft (64.0f).withTrimmedLeft (4.0f), juce::Justification::centredLeft);
+    g.setFont (theme::mono (9.5f));
+    g.drawText ("MIX " + juce::String (juce::roundToInt (mix * 100)), bottom.removeFromLeft (56.0f).withTrimmedLeft (4.0f), juce::Justification::centredLeft);
 
     auto info = bottom;
     if (! on)
-    {
-        g.setColour (theme::textDim);
         g.drawText ("BYPASSED", info, juce::Justification::centredRight);
-    }
     else if (loose)
     {
-        g.setColour (theme::warn);
+        g.setColour (theme::oxblood);
         g.drawText ("NOT CONNECTED", info, juce::Justification::centredRight);
     }
     else if (n->type == "dynamics.compressor")
     {
         const float gr = n->module->meter (0);
-        auto bar = info.withSizeKeepingCentre (info.getWidth() - 6.0f, 6.0f);
+        auto bar = info.withSizeKeepingCentre (info.getWidth() - 6.0f, 5.0f);
         g.setColour (theme::grid);
-        g.fillRoundedRectangle (bar, 3.0f);
+        g.fillRect (bar);
         const float w = juce::jlimit (0.0f, 1.0f, -gr / 20.0f) * bar.getWidth();
-        g.setColour (cat);
-        g.fillRoundedRectangle (bar.withLeft (bar.getRight() - w), 3.0f);
+        g.setColour (theme::oxblood);
+        g.fillRect (bar.withLeft (bar.getRight() - w));
     }
     else if (n->type == "tone.eq")
     {
@@ -1057,10 +1056,10 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
             const float y = info.getCentreY() - (float) juce::jlimit (-12.0, 12.0, eq.responseDb (f)) / 12.0f * info.getHeight() * 0.45f;
             if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
         }
-        g.setColour (theme::grid);
+        g.setColour (theme::edge);
         g.drawHorizontalLine ((int) info.getCentreY(), info.getX(), info.getRight());
-        g.setColour (cat);
-        g.strokePath (p, juce::PathStrokeType (1.4f));
+        g.setColour (theme::accent);
+        g.strokePath (p, juce::PathStrokeType (1.3f));
     }
     else
     {
@@ -1069,7 +1068,6 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
             const auto& s = n->module->params()[(size_t) i];
             if (s.simple)
             {
-                g.setColour (theme::textDim);
                 g.drawText (juce::String (s.name).toUpperCase() + " " + formatParam (s, n->module->getParam (i)).toUpperCase(),
                             info, juce::Justification::centredRight, true);
                 break;
@@ -1077,22 +1075,19 @@ void BridgePanel::drawCard (juce::Graphics& g, int id)
         }
     }
 
-    bool inUsed = false, outUsed = false;
-    for (auto& e : ui.proc.graph().edges()) { inUsed |= e.to == id; outUsed |= e.from == id; }
-    drawPort (g, inPort (id), inUsed ? theme::signalBlue : theme::textDim, false);
-    drawPort (g, outPort (id), outUsed ? theme::signalBlue : theme::textDim, false);
+    drawPort (g, inPort (id), theme::ink, false);
+    drawPort (g, outPort (id), theme::ink, false);
 }
 
 void BridgePanel::paint (juce::Graphics& g)
 {
-    theme::drawPanel (g, getLocalBounds(), "Bridge", "Fig. 02 - signal path");
+    theme::drawPanel (g, getLocalBounds(), "Bridge", juce::String (juce::CharPointer_UTF8 ("Fig. 02 \xe2\x80\x94 signal path")));
     {
-        auto hint = getLocalBounds().withHeight (kHeader).reduced (16, 0).withTrimmedRight (226);
+        auto hint = getLocalBounds().withHeight (kHeader).reduced (16, 0).withTrimmedRight (236).withTrimmedLeft (330);
         g.setColour (theme::textFaint);
         g.setFont (theme::sans (12.0f));
-        g.drawText ("Scroll to zoom - drag space to pan - drag a wire's end to re-route - Shift-drag pulls a block out",
-                    hint, juce::Justification::centredRight);
-        // zoom %
+        g.drawText (juce::String (juce::CharPointer_UTF8 ("Scroll to zoom \xc2\xb7 drag a wire's end to re-route \xc2\xb7 Shift-drag pulls a block out")),
+                    hint, juce::Justification::centredLeft, true);
         g.setColour (theme::textDim);
         g.setFont (theme::mono (10.0f));
         g.drawText (juce::String (juce::roundToInt (zoom * 100)) + " %", zoomOut.getBounds().translated (26, 0).withWidth (48), juce::Justification::centred);
@@ -1102,18 +1097,22 @@ void BridgePanel::paint (juce::Graphics& g)
     g.saveState();
     g.reduceClipRegion (c.toNearestInt());
 
-    // dotted paper grid (screen space, follows the pan)
+    // pattern paper: small crosses that follow the pan and zoom
     {
-        const float step = 22.0f * zoom;
-        if (step >= 7.0f)
+        const float step = 24.0f * zoom;
+        if (step >= 9.0f)
         {
             const auto origin = juce::Point<float> (0.0f, 0.0f).transformedBy (view());
             const float x0 = c.getX() + std::fmod (origin.x - c.getX(), step) - step;
             const float y0 = c.getY() + std::fmod (origin.y - c.getY(), step) - step;
-            g.setColour (theme::edge.withAlpha (0.7f));
-            for (float y = y0; y < c.getBottom(); y += step)
-                for (float x = x0; x < c.getRight(); x += step)
-                    g.fillRect (x, y, 1.2f, 1.2f);
+            const float k = 2.5f * juce::jmin (1.0f, zoom);
+            g.setColour (theme::edge);
+            for (float y = y0; y < c.getBottom() + step; y += step)
+                for (float x = x0; x < c.getRight() + step; x += step)
+                {
+                    g.fillRect (x - k, y, k * 2 + 1.0f, 0.8f);
+                    g.fillRect (x, y - k, 0.8f, k * 2 + 1.0f);
+                }
         }
     }
 
@@ -1121,7 +1120,7 @@ void BridgePanel::paint (juce::Graphics& g)
     auto& gr = ui.proc.graph();
     const auto edges = gr.edges();
 
-    // wires: dashed + violet when part of a split/merge (parallel path)
+    // wires: ink; parallel paths stitched in camel
     for (auto& e : edges)
     {
         int outs = 0, ins = 0, outIdx = 0, inIdx = 0;
@@ -1136,76 +1135,71 @@ void BridgePanel::paint (juce::Graphics& g)
         auto path = wirePath (outPort (e.from), inPort (e.to));
         if (sel || target)
         {
-            g.setColour (theme::accent.withAlpha (0.25f));
-            g.strokePath (path, juce::PathStrokeType (7.0f));
-            g.setColour (theme::accent);
-            g.strokePath (path, juce::PathStrokeType (2.4f));
+            g.setColour (theme::oxblood);
+            g.strokePath (path, juce::PathStrokeType (2.2f));
         }
         else if (parallel)
         {
-            juce::Path dashedPath;
-            const float dash[] = { 6.0f, 5.0f };
-            juce::PathStrokeType (2.0f).createDashedStroke (dashedPath, path, dash, 2);
-            g.setColour (theme::parallel);
-            g.fillPath (dashedPath);
+            juce::Path stitched;
+            const float dash[] = { 4.0f, 3.0f };
+            juce::PathStrokeType (1.3f).createDashedStroke (stitched, path, dash, 2);
+            g.setColour (theme::accent);
+            g.fillPath (stitched);
         }
         else
         {
-            g.setColour (theme::signalBlue.withAlpha (0.85f));
-            g.strokePath (path, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (theme::ink);
+            g.strokePath (path, juce::PathStrokeType (1.2f));
         }
     }
 
-    // wire being dragged / re-routed
+    // wire being drawn / re-routed
     if (dragMode == Drag::newWireFromOut || dragMode == Drag::newWireFromIn || dragMode == Drag::rewire)
     {
         const auto a = dragMode == Drag::newWireFromOut ? outPort (pressed.id) : dragMode == Drag::rewire ? outPort (rewireFrom) : nowWorld;
         const auto b = dragMode == Drag::newWireFromIn ? inPort (pressed.id) : nowWorld;
-        g.setColour (theme::accent.withAlpha (0.25f));
-        g.strokePath (wirePath (a, b), juce::PathStrokeType (7.0f));
-        g.setColour (theme::accent);
-        g.strokePath (wirePath (a, b), juce::PathStrokeType (2.4f));
-        g.fillEllipse (nowWorld.x - 4.0f, nowWorld.y - 4.0f, 8.0f, 8.0f);
+        g.setColour (theme::oxblood);
+        g.strokePath (wirePath (a, b), juce::PathStrokeType (1.8f));
+        g.fillEllipse (nowWorld.x - 3.5f, nowWorld.y - 3.5f, 7.0f, 7.0f);
     }
 
     drawIo (g, true);
     drawIo (g, false);
     for (int id : gr.nodeIds())
         drawCard (g, id);
-    drawPort (g, outPort (Graph::kInputId), theme::signalBlue, false);
-    drawPort (g, inPort (Graph::kOutputId), theme::signalBlue, false);
+    drawPort (g, outPort (Graph::kInputId), theme::ink, false);
+    drawPort (g, inPort (Graph::kOutputId), theme::ink, false);
 
     if (pendingType.isNotEmpty() && canvas().contains (nowScreen))
     {
         auto ghost = juce::Rectangle<float> (nowWorld.x - kCardW * 0.5f, nowWorld.y - kCardH * 0.5f, (float) kCardW, (float) kCardH);
-        const auto col = typeColour (pendingType.toStdString());
         juce::Path outline, d;
-        outline.addRoundedRectangle (ghost, 10.0f);
-        const float dash[] = { 5.0f, 4.0f };
-        juce::PathStrokeType (1.4f).createDashedStroke (d, outline, dash, 2);
-        g.setColour (col.withAlpha (0.8f));
+        outline.addRectangle (ghost);
+        const float dash[] = { 4.0f, 3.0f };
+        juce::PathStrokeType (1.0f).createDashedStroke (d, outline, dash, 2);
+        g.setColour (theme::accent);
         g.fillPath (d);
-        g.setFont (theme::mono (10.5f));
-        g.drawText (typeLabel (pendingType.toStdString()), ghost, juce::Justification::centred);
+        g.setFont (theme::heading (20.0f));
+        g.drawText (infoFor (pendingType.toStdString()) ? juce::String (infoFor (pendingType.toStdString())->displayName) : pendingType, ghost, juce::Justification::centred);
     }
     g.restoreState();
 
     if (gr.nodeIds().empty())
     {
         g.setColour (theme::textDim);
-        g.setFont (theme::sans (13.0f));
-        g.drawText ("Click a block below to add it - or drag it onto the line.", c.withTrimmedTop (c.getHeight() * 0.72f).toNearestInt(),
+        g.setFont (theme::heading (18.0f));
+        g.drawText ("Click a block below to add it, or drag it onto the line.", c.withTrimmedTop (c.getHeight() * 0.72f).toNearestInt(),
                     juce::Justification::centredTop);
     }
     if (flash.isNotEmpty())
     {
         auto box = juce::Rectangle<float> (c.getCentreX() - 250, c.getY() + 10, 500, 30);
         g.setColour (theme::card);
-        g.fillRoundedRectangle (box, 8.0f);
-        g.setColour (theme::warn);
-        g.drawRoundedRectangle (box, 8.0f, 1.0f);
+        g.fillRect (box);
+        g.setColour (theme::oxblood);
+        g.drawRect (box, 1.0f);
         g.setFont (theme::sans (12.5f));
-        g.setColour (theme::text);
+        g.setColour (theme::ink);
         g.drawText (flash, box, juce::Justification::centred);
     }
 }

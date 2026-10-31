@@ -19,8 +19,8 @@ private:
     void loadTemplate (const juce::ValueTree& bridge, const juce::String& name);
     Ui& ui;
     juce::Label study;
-    juce::TextButton navButton { "BRIDGE" }, templatesButton { "TEMPLATES" };
-    juce::String location;
+    juce::TextButton navButton { "Bridge" }, templatesButton { "TEMPLATES" };
+    juce::String location { "OVERVIEW" };
     juce::TextButton aButton { "A  WET" }, bButton { "B  DRY" }, matchButton { "MATCH" };
     juce::TextButton undoButton { "UNDO" }, redoButton { "REDO" }, exportButton { "EXPORT \"BLUEPRINT\"" };
     std::unique_ptr<ButtonAttachment> matchAtt;

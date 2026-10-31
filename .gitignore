@@ -3,3 +3,4 @@ build*/
 out/
 *.user
 plugin/Fonts/
+installer/art/

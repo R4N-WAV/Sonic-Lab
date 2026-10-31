@@ -11,7 +11,7 @@ HeaderBar::HeaderBar (Ui& u) : ui (u)
     bypass = st.getParameter ("chain.bypass");
 
     study.setText (ui.proc.projectName(), juce::dontSendNotification);
-    study.setFont (theme::sansMedium (15.0f));
+    study.setFont (theme::heading (21.0f));
     study.setColour (juce::Label::textColourId, theme::text);
     study.setEditable (false, true, false);
     study.setTooltip ("Double-click to rename this study. The name is used for the blueprint export.");
@@ -38,8 +38,9 @@ HeaderBar::HeaderBar (Ui& u) : ui (u)
     templatesButton.getProperties().set ("colour", (int) theme::accent.getARGB());
     templatesButton.setTooltip ("Start from a template (hardware styles, mixing chains, effects), or save / delete your own.");
     templatesButton.onClick = [this] { showTemplateMenu(); };
-    templatesButton.setClickingTogglesState (false);
-    templatesButton.setToggleState (true, juce::dontSendNotification);
+    templatesButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("TEMPLATES \xe2\x96\xbe")));
+    navButton.getProperties().set ("link", true);
+    exportButton.setButtonText ("Export blueprint");
 
     for (auto* b : { &aButton, &bButton, &matchButton, &undoButton, &redoButton, &exportButton, &navButton, &templatesButton })
         addAndMakeVisible (b);
@@ -107,7 +108,7 @@ void HeaderBar::showTemplateMenu()
         {
             const auto t = mine[(size_t) (r - 3000)];
             juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, "Delete template",
-                "Delete \"" + t.name + "\"? It is moved to the recycle bin.", "Delete", "Cancel", nullptr,
+                "Delete \"" + t.name + "\"? It is moved to the recycle bin.", "Delete", "Cancel", safe.getComponent(),
                 juce::ModalCallbackFunction::create ([t] (int res) { if (res == 1) templates::remove (t); }));
         }
         else if (r == 1) safe->saveTemplateDialog();
@@ -124,6 +125,7 @@ void HeaderBar::showTemplateMenu()
 void HeaderBar::saveTemplateDialog()
 {
     auto* w = new juce::AlertWindow ("Save as template", "Saves every block, wire and setting of this bridge.", juce::MessageBoxIconType::NoIcon);
+    w->setLookAndFeel (&dialogLookAndFeel());
     w->addTextEditor ("name", ui.proc.projectName(), "Name");
     w->addTextEditor ("category", "My templates", "Category");
     w->addTextEditor ("description", ui.proc.objective(), "Description");
@@ -136,7 +138,7 @@ void HeaderBar::saveTemplateDialog()
         juce::String err;
         if (! templates::save (w->getTextEditorContents ("name"), w->getTextEditorContents ("category"), w->getTextEditorContents ("description"),
                                safe->ui.proc.bridgeToTree(), err))
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Template not saved", err);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Template not saved", err, {}, safe.getComponent());
     }), true);
 }
 
@@ -156,70 +158,82 @@ void HeaderBar::timerCallback()
         if (auto* n = ui.proc.graph().node (ui.openEditorId))
             loc = juce::String (n->name).toUpperCase();
     const bool away = ui.openEditorId >= 0;
-    navButton.setButtonText (away ? juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90  BRIDGE")) : juce::String ("BRIDGE"));
-    navButton.getProperties().set ("colour", (int) (away ? theme::accent : theme::signalBlue).getARGB());
-    navButton.setToggleState (true, juce::dontSendNotification);
+    navButton.setButtonText (away ? juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90 Bridge")) : juce::String ("Bridge"));
+    navButton.getProperties().set ("colour", (int) (away ? theme::accent : theme::ink).getARGB());
+    navButton.setToggleState (! away, juce::dontSendNotification);
+    navButton.setSize (juce::GlyphArrangement::getStringWidthInt (theme::heading (20.0f), navButton.getButtonText()) + 6, navButton.getHeight());
+    if (away) loc = ui.openEditorId >= 0 && ui.proc.graph().node (ui.openEditorId) ? juce::String (ui.proc.graph().node (ui.openEditorId)->name) : loc;
     if (loc != location) { location = loc; repaint(); }
     repaint (getLocalBounds().removeFromRight (176));
 }
 
 void HeaderBar::paint (juce::Graphics& g)
 {
-    auto r = getLocalBounds().reduced (24, 0);
+    g.fillAll (theme::bg);
     g.setColour (theme::logo);
-    g.setFont (theme::serif (40.0f));
-    g.drawText ("Atelier", r.removeFromLeft (122), juce::Justification::centredLeft);
+    g.setFont (theme::serif (46.0f));
+    g.drawText ("Atelier", juce::Rectangle<int> (30, 8, 150, getHeight() - 12), juce::Justification::centredLeft);
     g.setColour (theme::textDim);
-    g.setFont (theme::mono (10.5f));
-    g.drawText ("BY R4N", r.removeFromLeft (70).translated (0, 6), juce::Justification::centredLeft);
-    // navigation pill: [BRIDGE] / location
+    g.setFont (theme::mono (10.0f));
+    g.drawText ("BY R4N", juce::Rectangle<int> (168, 36, 60, 16), juce::Justification::centredLeft);
+
+    // separators
+    g.setColour (theme::edge);
+    g.drawVerticalLine (236, 22.0f, (float) getHeight() - 22.0f);
+    g.drawVerticalLine (study.getX() - 10, 22.0f, (float) getHeight() - 22.0f);
+
+    // where am I:  Bridge / OVERVIEW   or   <- Bridge / Air & body  ESC
+    const int x = navButton.getRight() + 6;
+    g.setColour (theme::textFaint);
+    g.setFont (theme::mono (10.0f));
+    g.drawText ("/", juce::Rectangle<int> (x, 0, 12, getHeight()), juce::Justification::centred);
+    const int room = study.getX() - 22 - (x + 18);
+    if (ui.openEditorId >= 0)
     {
-        auto pill = juce::Rectangle<float> (206.0f, 19.0f, 300.0f, 34.0f);
-        g.setColour (theme::panel);
-        g.fillRoundedRectangle (pill, 8.0f);
-        g.setColour (theme::edge);
-        g.drawRoundedRectangle (pill, 8.0f, 1.0f);
-        g.setFont (theme::mono (10.5f));
+        g.setColour (theme::ink);
+        const auto f = theme::heading (20.0f);
+        g.setFont (f);
+        const int w = juce::jmin (room - 34, juce::GlyphArrangement::getStringWidthInt (f, location));
+        g.drawText (location, juce::Rectangle<int> (x + 18, 0, w, getHeight()), juce::Justification::centredLeft, true);
         g.setColour (theme::textFaint);
-        const int x = navButton.getRight() + 8;
-        g.drawText ("/", juce::Rectangle<int> (x, 19, 10, 34), juce::Justification::centred);
-        g.setColour (ui.openEditorId >= 0 ? theme::text : theme::textDim);
-        g.drawText (location, juce::Rectangle<int> (x + 14, 19, (int) pill.getRight() - x - 22, 34), juce::Justification::centredLeft, true);
+        g.setFont (theme::mono (9.0f));
+        g.drawText ("ESC", juce::Rectangle<int> (x + 24 + w, 2, 30, getHeight()), juce::Justification::centredLeft);
     }
+    else
+        g.drawText (location, juce::Rectangle<int> (x + 18, 0, room, getHeight()), juce::Justification::centredLeft, true);
+
     g.setColour (theme::textFaint);
     g.setFont (theme::mono (9.5f));
-    g.drawText (theme::q ("study"), juce::Rectangle<int> (study.getX() + 4, 12, 120, 14), juce::Justification::centredLeft);
+    g.drawText (juce::String (juce::CharPointer_UTF8 ("\xc3\x89TUDE")), juce::Rectangle<int> (study.getX() + 2, 16, 120, 12), juce::Justification::centredLeft);
 
     // status (right)
-    auto s = getLocalBounds().removeFromRight (176).reduced (20, 0);
+    auto s = getLocalBounds().removeFromRight (176).reduced (24, 0);
     g.setColour (theme::textDim);
-    g.setFont (theme::mono (10.5f));
-    g.drawFittedText (juce::String (ui.proc.currentSampleRate() / 1000.0, 1) + " kHz  " + juce::String (ui.proc.currentBlockSize())
+    g.setFont (theme::mono (9.5f));
+    g.drawFittedText (juce::String (ui.proc.currentSampleRate() / 1000.0, 1) + " KHZ  " + juce::String (ui.proc.currentBlockSize())
                           + "\nLATENCY " + juce::String (ui.proc.currentLatency()) + " SMP",
                       s, juce::Justification::centredRight, 2);
 
-    g.setColour (theme::edge);
+    g.setColour (theme::ink);
     g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
 }
 
 void HeaderBar::resized()
 {
-    navButton.setBounds (210, 23, 96, 26);
-    templatesButton.setBounds (524, 22, 104, 28);
-    study.setBounds (636, 28, 250, 24);
+    navButton.setBounds (250, 22, 96, 32);
+    templatesButton.setBounds (690, 25, 112, 26);
     auto r = getLocalBounds().withTrimmedRight (176).reduced (0, 18);
-    exportButton.setBounds (r.removeFromRight (178).withSizeKeepingCentre (178, 38));
-    r.removeFromRight (14);
-    redoButton.setBounds (r.removeFromRight (50).withSizeKeepingCentre (50, 30));
+    exportButton.setBounds (r.removeFromRight (178).withSizeKeepingCentre (178, 40));
+    r.removeFromRight (18);
+    redoButton.setBounds (r.removeFromRight (52).withSizeKeepingCentre (52, 26));
     r.removeFromRight (4);
-    undoButton.setBounds (r.removeFromRight (50).withSizeKeepingCentre (50, 30));
-    r.removeFromRight (14);
-    matchButton.setBounds (r.removeFromRight (112).withSizeKeepingCentre (112, 30));
-    r.removeFromRight (3);
-    bButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 30));
-    r.removeFromRight (3);
-    aButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 30));
-    study.setBounds (636, 28, juce::jmax (120, aButton.getX() - 650), 24);
+    undoButton.setBounds (r.removeFromRight (52).withSizeKeepingCentre (52, 26));
+    r.removeFromRight (18);
+    matchButton.setBounds (r.removeFromRight (96).withSizeKeepingCentre (96, 26));
+    bButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 26));
+    aButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 26));
+    templatesButton.setBounds (aButton.getX() - 136, 25, 112, 26);
+    study.setBounds (560, 28, templatesButton.getX() - 576, 28);
 }
 
 // ================================================================== SPECTRUM
@@ -317,40 +331,63 @@ void SpectrumPanel::drawCurve (juce::Graphics& g, const std::vector<float>& s, j
         a.lineTo (lastX, r.getBottom());
         a.lineTo (r.getX(), r.getBottom());
         a.closeSubPath();
-        theme::fadeFill (g, a, c, r.getY() + r.getHeight() * 0.25f, r.getBottom(), 0.30f);
-        theme::glowStroke (g, p, c, w);
+        theme::hatch (g, a, theme::ink, 0.20f, 5.0f);
+        g.setColour (c);
+        g.strokePath (p, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
     else
     {
+        juce::Path d;
+        const float dash[] = { 2.0f, 2.0f };
+        juce::PathStrokeType (w).createDashedStroke (d, p, dash, 2);
         g.setColour (c);
-        g.strokePath (p, juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.fillPath (d);
     }
 }
 
 void SpectrumPanel::paint (juce::Graphics& g)
 {
-    theme::drawPanel (g, getLocalBounds(), "Spectrum", ui.frozen ? "Fig. 01 - frozen" : "Fig. 01 - live");
+    g.fillAll (theme::bg);
+    {
+        auto h = getLocalBounds().withHeight (44).withTrimmedLeft (48);
+        g.setColour (theme::ink);
+        g.setFont (theme::heading (27.0f));
+        g.drawText ("Spectrum", h, juce::Justification::centredLeft);
+        g.setColour (theme::textFaint);
+        g.setFont (theme::mono (10.0f));
+        g.drawText (ui.frozen ? juce::String (juce::CharPointer_UTF8 ("FIG. 01 \xe2\x80\x94 FROZEN")) : juce::String (juce::CharPointer_UTF8 ("FIG. 01 \xe2\x80\x94 LIVE")),
+                    h.withTrimmedLeft (124).translated (0, 3), juce::Justification::centredLeft);
+    }
     auto r = plotArea();
 
-    // legend
+    // legend: line samples drawn the way the curves are drawn
     {
-        auto lg = getLocalBounds().withHeight (40).withTrimmedLeft (300).withTrimmedRight (280);
+        auto lg = getLocalBounds().withHeight (44).withTrimmedLeft (310).withTrimmedRight (300).translated (0, 2);
         g.setFont (theme::sans (12.0f));
-        auto item = [&] (const juce::String& t, juce::Colour c)
+        auto item = [&] (const juce::String& t, juce::Colour c, int style)
         {
-            auto a = lg.removeFromLeft (110);
+            auto a = lg.removeFromLeft (104);
+            const float y = (float) a.getCentreY();
             g.setColour (c);
-            g.fillRect (a.getX(), a.getCentreY(), 18, 2);
-            g.setColour (theme::textDim);
-            g.drawText (t, a.withTrimmedLeft (24), juce::Justification::centredLeft);
+            if (style == 1) for (float x = 0; x < 18; x += 4) g.fillRect ((float) a.getX() + x, y, 2.0f, 1.0f);
+            else g.fillRect ((float) a.getX(), y - (style == 2 ? 1.0f : 0.5f), 18.0f, style == 2 ? 2.0f : 1.5f);
+            g.setColour (style == 2 ? theme::accent : (style == 1 ? theme::textDim : theme::ink));
+            g.drawText (t, a.withTrimmedLeft (25), juce::Justification::centredLeft);
         };
-        if (showDiff) item ("Out - In", theme::signalBlue);
-        else { item ("Input", theme::reference); item ("Output", theme::signalBlue); }
-        item ("EQ curve", theme::accent);
+        if (showDiff) item ("Out - In", theme::ink, 0);
+        else { item ("Input", theme::reference, 1); item ("Output", theme::ink, 0); }
+        item ("Equaliser", theme::accent, 2);
     }
 
-    // grid
-    plot::drawFreqGrid (g, r);
+    // the sheet, its rule border, the ruler and the dB scale
+    g.setColour (theme::sheet);
+    g.fillRect (r);
+    for (double f : { 100.0, 1000.0, 10000.0 })
+    {
+        g.setColour (theme::edge);
+        g.drawVerticalLine ((int) plot::freqToX (f, r), r.getY(), r.getBottom());
+    }
+    theme::frequencyRuler (g, r, { 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0 }, false);
     g.setFont (theme::mono (9.5f));
     const double dbMin = showDiff ? -24.0 : -96.0, dbMax = showDiff ? 24.0 : 0.0;
     for (int i = 0; i <= 8; ++i)
@@ -358,11 +395,14 @@ void SpectrumPanel::paint (juce::Graphics& g)
         const double db = dbMax - i * (dbMax - dbMin) / 8.0;
         const float y = plot::dbToY (db, r, dbMin, dbMax);
         g.setColour (theme::grid);
-        g.drawHorizontalLine ((int) y, r.getX(), r.getRight());
+        if (i > 0 && i < 8)
+            for (float x = r.getX(); x < r.getRight(); x += 4.0f) g.fillRect (x, y, 1.0f, 1.0f);
+        g.setColour (theme::ink);
+        g.drawLine (r.getX() - (i % 2 == 0 ? 7.0f : 4.0f), y, r.getX(), y, 0.8f);
         if (i % 2 == 0)
         {
             g.setColour (theme::textDim);
-            g.drawText (juce::String ((int) db), juce::Rectangle<float> (0.0f, y - 6.0f, 42.0f, 12.0f), juce::Justification::centredRight);
+            g.drawText (juce::String ((int) db), juce::Rectangle<float> (0.0f, y - 6.0f, r.getX() - 10.0f, 12.0f), juce::Justification::centredRight);
         }
     }
 
@@ -387,13 +427,13 @@ void SpectrumPanel::paint (juce::Graphics& g)
             const float y = plot::dbToY (juce::jlimit (-24.0, 24.0, (double) d[(size_t) k] + 48.0), r, -24.0, 24.0);
             if (! st) { p.startNewSubPath (r.getX() + x, y); st = true; } else p.lineTo (r.getX() + x, y);
         }
-        g.setColour (theme::signalBlue);
-        g.strokePath (p, juce::PathStrokeType (1.6f));
+        g.setColour (theme::ink);
+        g.strokePath (p, juce::PathStrokeType (1.4f));
     }
     else
     {
-        drawCurve (g, ui.res.spectrumX, r, theme::reference, 1.1f, false);
-        drawCurve (g, ui.res.spectrumY, r, theme::signalBlue, 1.6f, true);
+        drawCurve (g, ui.res.spectrumX, r, theme::reference, 1.0f, false);
+        drawCurve (g, ui.res.spectrumY, r, theme::ink, 1.4f, true);
     }
 
     // EQ overlay
@@ -417,27 +457,21 @@ void SpectrumPanel::paint (juce::Graphics& g)
             if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
         }
         const float y0 = plot::dbToY (0.0, r, -range, range);
-        g.setColour (theme::beige.withAlpha (0.35f));
-        for (float x = r.getX(); x < r.getRight(); x += 7.0f)
-            g.drawLine (x, y0, x + 3.0f, y0, 1.0f);
-        theme::glowStroke (g, p, theme::accent, 1.8f);
-        // band handles
-        g.setFont (theme::mono (10.0f));
+        g.setColour (theme::logo);
+        for (float x = r.getX(); x < r.getRight(); x += 10.0f)
+            g.drawLine (x, y0, x + 6.0f, y0, 0.8f);
+        g.setColour (theme::accent);
+        g.strokePath (p, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         for (int b = 0; b < sonic::ParametricEqModule::kMaxBands; ++b)
         {
             if (! eq.bandOn (b)) continue;
             const double f = eq.getParam (sonic::ParametricEqModule::bandParam (b, sonic::ParametricEqModule::fFreq));
             const float x = plot::freqToX (f, r);
             const float y = plot::dbToY (juce::jlimit (-range, range, eq.responseDb (f)), r, -range, range);
-            g.setColour (theme::panel);
-            g.fillEllipse (x - 8, y - 8, 16, 16);
-            g.setColour (theme::beige);
-            g.drawEllipse (x - 8, y - 8, 16, 16, 1.4f);
-            g.setColour (theme::text);
-            g.drawText (juce::String (b + 1), juce::Rectangle<float> (x - 8, y - 8, 16, 16), juce::Justification::centred);
+            theme::numberedHandle (g, { x, y }, b + 1, false, theme::accent, 8.0f);
         }
         g.restoreState();
-        g.setColour (theme::beigeText);
+        g.setColour (theme::accent);
         g.setFont (theme::mono (9.5f));
         g.drawText ("EQ: " + juce::String (n->name).toUpperCase() + "  " + juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"))
                         + numText (range, range < 2 ? 1 : 0) + " dB",
@@ -449,9 +483,8 @@ void SpectrumPanel::paint (juce::Graphics& g)
     // hover readout
     if (r.contains (hover))
     {
-        g.setColour (theme::text.withAlpha (0.35f));
-        for (float y = r.getY(); y < r.getBottom(); y += 5.0f)
-            g.drawLine (hover.x, y, hover.x, y + 2.0f, 1.0f);
+        g.setColour (theme::oxblood);
+        g.drawLine (hover.x, r.getY(), hover.x, r.getBottom(), 0.8f);
         const double f = plot::xToFreq (hover.x, r);
         const double binHz = ui.res.sampleRate / juce::jmax (1, ui.res.fftSize);
         const int k = (int) std::lround (f / binHz);
@@ -462,15 +495,17 @@ void SpectrumPanel::paint (juce::Graphics& g)
         if (box.getRight() > r.getRight()) box.setX (hover.x - 190);
         g.setColour (theme::card);
         g.fillRect (box);
-        g.setColour (theme::selEdge);
+        g.setColour (theme::ink);
         g.drawRect (box, 1.0f);
-        g.setColour (theme::light);
         g.setFont (theme::mono (10.5f));
         g.drawFittedText (t, box.reduced (8, 4).toNearestInt(), juce::Justification::centredLeft, 2);
     }
 
+    g.setColour (theme::ink);
+    g.drawRect (r.expanded (0.5f), 1.0f);
+
     // footnote with conditions
-    g.setColour (theme::textDim);
+    g.setColour (theme::textFaint);
     g.setFont (theme::mono (9.5f));
     const juce::String mode = ui.res.mode == AnalysisWorker::Mode::chain ? "IN = BRIDGE INPUT, OUT = BRIDGE OUTPUT" : "IN = SIDECHAIN, OUT = MAIN INPUT";
     g.drawText ("FFT " + juce::String (ui.res.fftSize) + " - " + juce::String (sonic::windowName (ui.res.window)).toUpperCase()
@@ -497,9 +532,8 @@ ReadoutPanel::ReadoutPanel (Ui& u) : ui (u)
 
 void ReadoutPanel::resized()
 {
-    auto r = getLocalBounds().withHeight (40).reduced (12, 9);
-    refMode.setBounds (r.removeFromRight (84));
-    r.removeFromRight (4);
+    auto r = getLocalBounds().withHeight (44).reduced (0, 10);
+    refMode.setBounds (r.removeFromRight (86));
     chainMode.setBounds (r.removeFromRight (60));
 }
 
@@ -548,43 +582,48 @@ void ReadoutPanel::HarmonicsView::update (const AnalysisWorker::Results& r, doub
 void ReadoutPanel::paint (juce::Graphics& g)
 {
     hv.update (ui.res, juce::Time::getMillisecondCounterHiRes());
-    theme::drawPanel (g, getLocalBounds(), "Readout");
+    g.fillAll (theme::bg);
+    theme::columnRule (g, getLocalBounds().withTrimmedTop (8));
+    g.setColour (theme::ink);
+    g.setFont (theme::heading (27.0f));
+    g.drawText ("Readout", getLocalBounds().withHeight (44).withTrimmedLeft (22), juce::Justification::centredLeft);
     const auto& res = ui.res;
-    auto r = getLocalBounds().reduced (16, 0).withTrimmedTop (52);
+    auto r = getLocalBounds().withTrimmedLeft (22).withTrimmedTop (52);
 
     auto cell = [&] (juce::Rectangle<int> c, const juce::String& label, const juce::String& value, const juce::String& unit, const juce::String& tip = {})
     {
         juce::ignoreUnused (tip);
+        auto cc = c.withTrimmedRight (14);
+        g.setColour (theme::textFaint);
+        g.setFont (theme::mono (9.0f));
+        g.drawText (label, cc.removeFromTop (14), juce::Justification::centredLeft);
+        const bool reduction = label == "REDUCTION" && value != "0.0";
+        g.setColour (reduction ? theme::oxblood : theme::ink);
+        g.setFont (theme::numeral (30.0f));
+        const int w = juce::GlyphArrangement::getStringWidthInt (theme::numeral (30.0f), value);
+        g.drawText (value, cc.removeFromTop (30), juce::Justification::centredLeft);
         g.setColour (theme::textDim);
         g.setFont (theme::mono (9.5f));
-        g.drawText (label, c.removeFromTop (14), juce::Justification::centredLeft);
-        g.setColour (theme::text);
-        g.setFont (theme::sansMedium (20.0f));
-        const int w = juce::GlyphArrangement::getStringWidthInt (theme::sansMedium (20.0f), value);
-        g.drawText (value, c.removeFromTop (24), juce::Justification::centredLeft);
-        g.setColour (theme::textDim);
-        g.setFont (theme::sans (11.0f));
-        g.drawText (unit, juce::Rectangle<int> (c.getX() + w + 5, c.getY() - 18, 60, 14), juce::Justification::centredLeft);
+        g.drawText (unit.toUpperCase(), juce::Rectangle<int> (cc.getX() + w + 6, cc.getY() - 16, 60, 12), juce::Justification::centredLeft);
+        g.setColour (theme::edge);
+        g.drawHorizontalLine (c.getBottom() - 1, (float) c.getX(), (float) c.getRight() - 14.0f);
     };
     auto fmt = [] (double v, int dp) { return v < -150.0 ? juce::String ("-inf") : juce::String (v, dp); };
 
     const int cw = r.getWidth() / 2;
-    auto row = r.removeFromTop (44);
+    auto row = r.removeFromTop (52);
     cell (row.removeFromLeft (cw), "LOUDNESS", fmt (res.lufsShort, 1), "LUFS-S");
     cell (row, "TRUE PEAK", fmt (res.truePeakDb, 1), "dBTP");
-    r.removeFromTop (12);
-    row = r.removeFromTop (44);
+    r.removeFromTop (6);
+    row = r.removeFromTop (52);
     cell (row.removeFromLeft (cw), "CREST", res.yHasSignal ? juce::String (res.crestDb, 1) : "-", "dB");
-    cell (row, "GAIN REDUCTION", juce::String (ui.totalGainReduction(), 1), "dB");
-    r.removeFromTop (12);
-    row = r.removeFromTop (44);
+    cell (row, "REDUCTION", juce::String (ui.totalGainReduction(), 1), "dB");
+    r.removeFromTop (6);
+    row = r.removeFromTop (52);
     cell (row.removeFromLeft (cw), "STEREO CORR.", res.stereoValid ? juce::String (res.correlation, 2) : "-", "");
     cell (row, "THD", hv.showing ? juce::String (hv.thdPct, hv.thdPct < 1 ? 3 : 2) : "-", "%");
 
     r.removeFromTop (14);
-    g.setColour (theme::dashed);
-    g.drawHorizontalLine (r.getY(), (float) r.getX(), (float) r.getRight());
-    r.removeFromTop (10);
 
     // harmonics
     auto head = r.removeFromTop (16);
@@ -593,12 +632,11 @@ void ReadoutPanel::paint (juce::Graphics& g)
     g.drawText ("HARMONICS" + (hv.showing ? juce::String (" - F0 ") + formatValue (hv.f0, "Hz").toUpperCase() : juce::String()),
                 head, juce::Justification::centredLeft);
     if (hv.showing)
-        theme::drawTag (g, head.removeFromRight (82), hv.held ? "HELD" : (hv.estimated ? "ESTIMATED" : "MEASURED"),
-                        hv.held ? theme::textDim : (hv.estimated ? theme::warn : theme::good),
-                        hv.held ? theme::edge : (hv.estimated ? theme::warn.darker (0.4f) : theme::goodEdge), theme::panel);
+        theme::drawTag (g, head.removeFromRight (96).withTrimmedRight (14), hv.held ? "HELD" : (hv.estimated ? "ESTIMATED" : "MEASURED"),
+                        hv.held ? theme::textFaint : theme::accent, theme::edge, theme::bg);
     r.removeFromTop (8);
-    auto bars = r.removeFromTop (92);
-    g.setColour (theme::edge);
+    auto bars = r.removeFromTop (92).withTrimmedRight (14);
+    g.setColour (theme::ink);
     g.drawHorizontalLine (bars.getBottom(), (float) bars.getX(), (float) bars.getRight());
     const int nb = 6;
     const int bw = (bars.getWidth() - (nb - 1) * 6) / nb;
@@ -607,14 +645,17 @@ void ReadoutPanel::paint (juce::Graphics& g)
         auto b = juce::Rectangle<int> (bars.getX() + i * (bw + 6), bars.getY(), bw, bars.getHeight());
         const double dbc = hv.showing ? hv.dbc[(size_t) i] : -120.0;
         const float h = (float) juce::jlimit (0.0, 1.0, (dbc + 100.0) / 100.0) * (float) b.getHeight();
-        g.setColour ((i % 2 == 0 ? theme::signalBlue : theme::reference.brighter (0.2f)).withMultipliedAlpha (hv.held ? 0.45f : 1.0f));
-        g.fillRect ((float) b.getX(), (float) b.getBottom() - h, (float) b.getWidth(), h);
+        // even harmonics solid ink, odd ones outlined
+        const auto bar = juce::Rectangle<float> ((float) b.getX() + b.getWidth() * 0.2f, (float) b.getBottom() - h, b.getWidth() * 0.6f, h);
+        const auto inkC = theme::ink.withMultipliedAlpha (hv.held ? 0.4f : 1.0f);
+        if (i % 2 == 0) { g.setColour (inkC); g.fillRect (bar); }
+        else { g.setColour (theme::card); g.fillRect (bar); g.setColour (inkC); g.drawRect (bar, 1.0f); }
         g.setColour (theme::textDim);
-        g.setFont (theme::mono (9.5f));
-        g.drawText ("H" + juce::String (i + 2), b.translated (0, b.getHeight() + 2).withHeight (12), juce::Justification::centred);
+        g.setFont (theme::heading (15.0f));
+        g.drawText ("H" + juce::String (i + 2), b.translated (0, b.getHeight() + 2).withHeight (16), juce::Justification::centred);
     }
-    r.removeFromTop (20);
-    g.setColour (theme::textDim);
+    r.removeFromTop (24);
+    g.setColour (theme::textFaint);
     g.setFont (theme::sans (11.5f));
     juce::String note = hv.showing && ! hv.held
         ? (hv.estimated ? juce::String ("f0 estimated from the spectrum peak: valid for a single steady tone.")
@@ -627,5 +668,5 @@ void ReadoutPanel::paint (juce::Graphics& g)
              : sc == AtelierProcessor::SidechainState::silent       ? "Sidechain: SILENT - connected, but no audio is arriving."
                                                                     : "Sidechain: ACTIVE - input/output comparison is valid.";
     }
-    g.drawFittedText (note, r.removeFromTop (34), juce::Justification::topLeft, 2);
+    g.drawFittedText (note, r.removeFromTop (34).withTrimmedRight (14), juce::Justification::topLeft, 2);
 }

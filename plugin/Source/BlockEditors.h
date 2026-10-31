@@ -50,7 +50,7 @@ private:
     void loadReference();
     void computeMatch();
 
-    juce::TextButton back { "<-  BRIDGE" };
+    juce::TextButton back { juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90 Bridge")) };
     juce::OwnedArray<juce::TextButton> rangeButtons;
     double fixedRange = 12.0;
     bool autoRange = false;
@@ -99,7 +99,7 @@ private:
     juce::Rectangle<int> designerArea() const;
     void setHarmonicFromMouse (juce::Point<float> p);
 
-    juce::TextButton back { "<-  BRIDGE" };
+    juce::TextButton back { juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90 Bridge")) };
     juce::OwnedArray<ModuleParamRow> shapeRows, stageRows;
     juce::OwnedArray<ModuleKnob> knobs;
     std::unique_ptr<juce::Component> mixKnob;

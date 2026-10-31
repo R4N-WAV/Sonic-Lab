@@ -281,11 +281,11 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().removeFromBottom (32);
-        g.setColour (theme::text);
-        g.setFont (theme::sansMedium (12.5f));
-        g.drawText (juce::String (slider.spec().name), r.removeFromTop (16), juce::Justification::centred);
+        g.setColour (theme::ink);
+        g.setFont (theme::heading (17.0f));
+        g.drawText (juce::String (slider.spec().name), r.removeFromTop (17), juce::Justification::centred);
         g.setColour (theme::textDim);
-        g.setFont (theme::mono (10.0f));
+        g.setFont (theme::mono (9.5f));
         g.drawText (slider.getTextFromValue (slider.getValue()), r, juce::Justification::centred);
     }
     ModuleSlider slider;

@@ -77,6 +77,10 @@ int main (int argc, char** argv)
     shot ("eq.png");
     if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) { e->closeBlock(); e->openBlock (g.addNode ("character.saturation", 900, -10)); }
     shot ("saturation.png");
+    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) { e->closeBlock(); e->selectBlock (sonic::Graph::kInputId); }
+    shot ("input.png");
+    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) e->openExportDialog();
+    shot ("export.png");
     run = false;
     audio.join();
     ed.reset();

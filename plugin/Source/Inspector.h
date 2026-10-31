@@ -50,7 +50,7 @@ private:
     int builtFor = -2;
     juce::String builtRelevance;   // which params were shown; a change triggers a rebuild
     juce::String relevanceKey() const;
-    juce::String title, subtitle, description;
+    juce::String title, titleNote, subtitle, description;
 
     juce::TextButton simpleBtn { "SIMPLE" }, advancedBtn { "ADVANCED" };
     juce::OwnedArray<ModuleKnob> knobs;
