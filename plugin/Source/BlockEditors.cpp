@@ -1,51 +1,237 @@
 #include "BlockEditors.h"
 
 #include <sonic/Analysis.h>
-#include <sonic/SignalGenerator.h>
 
 namespace
 {
-    const juce::Rectangle<int> kDisplay { 24, 16, 1552, 600 };
-    const juce::Rectangle<int> kLowerLeft { 24, 630, 1120, 272 };
-    const juce::Rectangle<int> kLowerRight { 1160, 630, 416, 272 };
     const char* kShapeShort[] = { "BELL", "LO SHELF", "HI SHELF", "LO CUT", "HI CUT", "NOTCH", "BAND PASS", "TILT" };
+    constexpr int kRowH = 27, kHeaderH = 22;
 
-    // even harmonics warm, odd harmonics blue (index 0 = H2)
-    juce::Colour harmonicColour (int k) { return k % 2 == 0 ? theme::ink : theme::textDim; }
-
-    // even harmonics: solid ink; odd harmonics: an ink outline on paper
-    void harmBar (juce::Graphics& g, juce::Rectangle<float> bar, int k, float alpha = 1.0f)
+    void dashedRect (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c)
     {
-        if (bar.getHeight() <= 0.0f) return;
-        const auto c = theme::ink.withMultipliedAlpha (alpha);
-        if (k % 2 == 0) { g.setColour (c); g.fillRect (bar); }
-        else { g.setColour (theme::card); g.fillRect (bar); g.setColour (c); g.drawRect (bar, 1.0f); }
-    }
-
-
-
-    void drawDashedH (juce::Graphics& g, float x0, float x1, float y, juce::Colour c)
-    {
+        juce::Path o, d;
+        o.addRectangle (r);
+        const float dash[] = { 4.0f, 3.0f };
+        juce::PathStrokeType (1.0f).createDashedStroke (d, o, dash, 2);
         g.setColour (c);
-        for (float x = x0; x < x1; x += 7.0f)
-            g.drawLine (x, y, juce::jmin (x + 3.0f, x1), y, 1.0f);
+        g.fillPath (d);
     }
 }
 
-// ================================================================== EQ EDITOR
+// ================================================================== NodeRow
 
-EqEditor::EqEditor (Ui& u, int id) : BlockEditor (u, id)
+NodeRow::NodeRow (Ui& u, int nodeId, bool isMix) : ui (u), id (nodeId), mix (isMix)
 {
-    back.onClick = [this] { if (onClose) onClose(); };
-    back.getProperties().set ("link", true);
-    back.getProperties().set ("colour", (int) theme::accent.getARGB());
-    addAndMakeVisible (back);
+    slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    if (mix) { slider.setRange (0.0, 100.0, 0.0); slider.setTextValueSuffix (" %"); }
+    else { slider.setRange (-24.0, 24.0, 0.0); slider.setTextValueSuffix (" dB"); }
+    if (auto* n = ui.proc.graph().node (id))
+        slider.setDefault (mix ? n->module->defaultMix() * 100.0 : 0.0);
+    slider.valueArea = [this] { return getLocalBounds().removeFromRight (valueW) - slider.getPosition(); };
+    const auto tip = mix ? help::tooltip ("Mix", { "Blend between the sound going into this block (0 %) and the block's result (100 %). Time-aligned, so no phasing.",
+                                                   "more of the block's effect", "more of the untouched sound" })
+                         : help::tooltip ("Block output", { "Level after this block (after Mix).", "louder", "quieter" });
+    setTooltip (tip + "\n\nDouble-click: reset.  Right-click or click the number: type a value.");
+    slider.setTooltip (getTooltip());
+    slider.onValueChange = [this]
+    {
+        if (auto* n = ui.proc.graph().node (id))
+        {
+            if (mix) n->mix = (float) slider.getValue() * 0.01f;
+            else n->outGainDb = (float) slider.getValue();
+        }
+        repaint();
+    };
+    slider.onDragEnd = [this] { ui.proc.checkpoint(); };
+    addAndMakeVisible (slider);
+    sync();
+}
 
+void NodeRow::sync()
+{
+    if (slider.isMouseButtonDown()) return;
+    if (auto* n = ui.proc.graph().node (id))
+    {
+        const double v = mix ? n->mix.load() * 100.0 : n->outGainDb.load();
+        if (std::abs (v - slider.getValue()) > 1e-6)
+        {
+            slider.setValue (v, juce::dontSendNotification);
+            repaint();
+        }
+    }
+}
+
+void NodeRow::resized()
+{
+    slider.setBounds (getLocalBounds().withTrimmedLeft (labelW).withTrimmedRight (valueW + 4));
+}
+
+void NodeRow::paint (juce::Graphics& g)
+{
+    g.setColour (theme::textDim);
+    g.setFont (theme::sans (12.5f));
+    g.drawText (mix ? "Mix" : "Block output", getLocalBounds().withWidth (labelW - 6), juce::Justification::centredLeft);
+    g.setColour (theme::text);
+    g.setFont (theme::mono (10.5f));
+    g.drawText (mix ? juce::String (juce::roundToInt (slider.getValue())) + " %" : formatValue (slider.getValue(), "dB"),
+                getLocalBounds().removeFromRight (valueW), juce::Justification::centredRight);
+}
+
+void NodeRow::mouseDown (const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu() || getLocalBounds().removeFromRight (valueW).contains (e.getPosition()))
+        slider.beginTextEntry();
+}
+
+void NodeRow::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (! getLocalBounds().removeFromRight (valueW).contains (e.getPosition()))
+        slider.resetToDefault();
+}
+
+// ================================================================== ControlsPanel
+
+namespace
+{
+    struct HeaderLayer : public juce::Component
+    {
+        std::vector<std::pair<juce::Rectangle<int>, juce::String>>* list = nullptr;
+        void paint (juce::Graphics& g) override
+        {
+            if (list == nullptr) return;
+            for (auto& [r, t] : *list)
+            {
+                g.setColour (theme::accent);
+                g.setFont (theme::mono (9.5f));
+                g.drawText (t.toUpperCase(), r.withTrimmedBottom (4), juce::Justification::bottomLeft);
+                g.setColour (theme::edge);
+                g.drawHorizontalLine (r.getBottom() - 2, (float) r.getX(), (float) r.getRight() - 10.0f);
+            }
+        }
+    };
+}
+
+ControlsPanel::ControlsPanel (Ui& u, int nodeId, std::function<bool (int)> skip, bool withNodeRows) : ui (u)
+{
+    auto* layer = new HeaderLayer();
+    layer->list = &headers;
+    content.addAndMakeVisible (layer);
+    content.getProperties().set ("layer", true);
+    viewport.setViewedComponent (&content, false);
+    viewport.setScrollBarsShown (true, false);
+    viewport.setScrollBarThickness (6);
+    addAndMakeVisible (viewport);
+
+    auto* n = ui.proc.graph().node (nodeId);
+    if (n == nullptr) return;
+    auto& m = *n->module;
+    // rows grouped by section, sections in order of first appearance
+    std::vector<juce::String> groups;
+    for (int i = 0; i < m.numParams(); ++i)
+        if (! (skip && skip (i)) && ! juce::StringArray (groups.data(), (int) groups.size()).contains (juce::String (m.params()[(size_t) i].group)))
+            groups.push_back (juce::String (m.params()[(size_t) i].group));
+    for (auto& grp : groups)
+    {
+        bool first = true;
+        for (int i = 0; i < m.numParams(); ++i)
+        {
+            if ((skip && skip (i)) || juce::String (m.params()[(size_t) i].group) != grp) continue;
+            auto* row = rows.add (new ModuleParamRow (ui.proc, m, i));
+            content.addAndMakeVisible (row);
+            items.push_back ({ first ? grp : juce::String(), row });
+            first = false;
+        }
+    }
+    if (withNodeRows)
+    {
+        auto* mixRow = nodeRows.add (new NodeRow (ui, nodeId, true));
+        auto* outRow = nodeRows.add (new NodeRow (ui, nodeId, false));
+        content.addAndMakeVisible (mixRow);
+        content.addAndMakeVisible (outRow);
+        items.push_back ({ "Block", mixRow });
+        items.push_back ({ {}, outRow });
+    }
+    // the header layer is the first child; keep it under the rows
+    layer->toBack();
+}
+
+void ControlsPanel::sync()
+{
+    for (auto* r : rows) r->sync();
+    for (auto* r : nodeRows) r->sync();
+}
+
+void ControlsPanel::resized()
+{
+    viewport.setBounds (getLocalBounds());
+    const int W = getWidth() - 8, H = getHeight();
+    const int cols = juce::jlimit (1, 3, preferredColumns > 0 ? preferredColumns : W / 255);
+    const int colW = W / cols;
+    auto place = [&] (int colH, bool apply)
+    {
+        int col = 0, y = 0;
+        if (apply) headers.clear();
+        for (size_t k = 0; k < items.size(); ++k)
+        {
+            const auto& it = items[k];
+            const int need = (it.header.isNotEmpty() ? kHeaderH + kRowH : kRowH);
+            if (y + need > colH && y > 0)
+            {
+                if (++col >= cols) return false;
+                y = 0;
+            }
+            if (it.header.isNotEmpty())
+            {
+                if (apply) headers.push_back ({ juce::Rectangle<int> (col * colW, y, colW, kHeaderH), it.header });
+                y += kHeaderH;
+            }
+            if (apply) it.comp->setBounds (col * colW, y, colW - 14, kRowH - 3);
+            y += kRowH;
+        }
+        return true;
+    };
+    int colH = H;
+    while (! place (colH, false) && colH < 6000)
+        colH += kRowH;
+    place (colH, true);
+    content.setSize (W, colH);
+    for (auto* c : content.getChildren())
+        if (dynamic_cast<HeaderLayer*> (c) != nullptr)
+            c->setBounds (content.getLocalBounds());
+    for (auto* r : rows) { r->labelW = colW > 300 ? 118 : 104; r->valueW = 68; r->resized(); }
+    for (auto* r : nodeRows) { r->labelW = colW > 300 ? 118 : 104; r->valueW = 68; r->resized(); }
+}
+
+void ControlsPanel::paint (juce::Graphics&) {}
+
+// ================================================================== GenericBody
+
+GenericBody::GenericBody (Ui& u, int id, PreviewEngine& e) : figure (u, id, e), controls (u, id)
+{
+    addAndMakeVisible (figure);
+    addAndMakeVisible (controls);
+}
+
+void GenericBody::resized()
+{
+    auto r = getLocalBounds();
+    figure.setBounds (r.removeFromLeft ((int) (r.getWidth() * 0.47f)));
+    r.removeFromLeft (28);
+    controls.setBounds (r);
+}
+
+// ================================================================== EQ VIEW
+
+EqView::EqView (Ui& u, int id) : nodeId (id), ui (u)
+{
+    setWantsKeyboardFocus (true);
     const char* labels[] = { "30", "24", "12", "6", "3", "1", "AUTO" };
     const double vals[] = { 30, 24, 12, 6, 3, 1, 0 };
     for (int i = 0; i < 7; ++i)
     {
         auto* b = rangeButtons.add (new juce::TextButton (i < 6 ? juce::String (juce::CharPointer_UTF8 ("\xc2\xb1")) + labels[i] : labels[i]));
+        b->getProperties().set ("small", true);
         b->setTooltip ("Vertical range of the display. Small ranges magnify fractions of a dB.");
         b->onClick = [this, i, vals]
         {
@@ -58,100 +244,128 @@ EqEditor::EqEditor (Ui& u, int id) : BlockEditor (u, id)
     }
     rangeButtons[2]->setToggleState (true, juce::dontSendNotification);
 
-    addBand.onClick = [this]
+    for (auto* t : { "BAND", "EQ", "MATCH" })
     {
-        const int b = eq().firstFreeBand();
-        if (b < 0) return;
-        eq().setParam (EQ::bandParam (b, EQ::fShape), 0.0f);
-        eq().setParam (EQ::bandParam (b, EQ::fGain), 0.0f);
-        eq().setParam (EQ::bandParam (b, EQ::fQ), 1.0f);
-        eq().setParam (EQ::bandParam (b, EQ::fOn), 1.0f);
-        ui.proc.checkpoint();
-        selectBand (b);
-    };
-    removeBand.onClick = [this]
+        auto* b = tabs.add (new juce::TextButton (t));
+        const int i = tabs.size() - 1;
+        b->onClick = [this, i] { showTab (i); };
+        addAndMakeVisible (b);
+    }
+
+    prevBand.onClick = [this]
     {
-        if (selected < 0) return;
-        eq().setParam (EQ::bandParam (selected, EQ::fOn), 0.0f);
-        ui.proc.checkpoint();
-        selectBand (-1);
+        for (int b = (selected < 0 ? EQ::kMaxBands : selected) - 1; b >= 0; --b)
+            if (eq().bandOn (b)) { selectBand (b); return; }
     };
-    addAndMakeVisible (addBand);
-    addAndMakeVisible (removeBand);
+    nextBand.onClick = [this]
+    {
+        for (int b = selected + 1; b < EQ::kMaxBands; ++b)
+            if (eq().bandOn (b)) { selectBand (b); return; }
+    };
+    addBand.onClick = [this] { addBandAt (1000.0, 0.0); };
+    removeBand.onClick = [this] { deleteSelectedBands(); };
+    addBand.setTooltip ("Add a bell at 1 kHz (or just click the curve).");
+    removeBand.setTooltip ("Remove the selected band(s). Delete key works too.");
+    for (auto* b : { &prevBand, &nextBand, &addBand, &removeBand })
+        addChildComponent (b);
 
-    phaseMode = std::make_unique<ModuleChoice> (ui.proc, eq(), 0);
-    linQuality = std::make_unique<ModuleChoice> (ui.proc, eq(), 1);
-    outputRow = std::make_unique<ModuleParamRow> (ui.proc, eq(), 2);
-    addAndMakeVisible (*phaseMode);
-    addAndMakeVisible (*linQuality);
-    addAndMakeVisible (*outputRow);
+    eqControls = std::make_unique<ControlsPanel> (ui, nodeId, [] (int i) { return i >= 3; });
+    eqControls->preferredColumns = 1;
+    addChildComponent (*eqControls);
+    clearAll.onClick = [this]
+    {
+        std::vector<int> all;
+        for (int b = 0; b < EQ::kMaxBands; ++b) if (eq().bandOn (b)) all.push_back (b);
+        removeBands (all);
+    };
+    clearAll.getProperties().set ("colour", (int) theme::danger.getARGB());
+    addChildComponent (clearAll);
 
-    refButton.onClick = [this] { loadReference(); };
+    refFile.onClick = [this] { loadReference(); };
+    refCapture.setClickingTogglesState (true);
     learnButton.setClickingTogglesState (true);
+    refCapture.onClick = [this]
+    {
+        learnButton.setToggleState (false, juce::dontSendNotification);
+        capturing = refCapture.getToggleState() ? 1 : 0;
+        if (capturing) { reference = {}; refName = "captured"; }
+        updateMatchStatus();
+    };
     learnButton.onClick = [this]
     {
-        if (learnButton.getToggleState())
-        {
-            learnPow.clear();
-            learnFrames = 0;
-            matchStatus = "Learning: play the material you want to match...";
-        }
-        else
-            matchStatus = "Learned " + juce::String (learnFrames / 15.0, 1) + " s of input.";
-        learnButton.setButtonText (learnButton.getToggleState() ? "STOP LEARNING" : "LEARN INPUT");
-        repaint();
+        refCapture.setToggleState (false, juce::dontSendNotification);
+        capturing = learnButton.getToggleState() ? 2 : 0;
+        if (capturing) yours = {};
+        updateMatchStatus();
     };
     applyButton.getProperties().set ("beige", true);
-    applyButton.onClick = [this] { computeMatch(); };
-    refButton.setTooltip ("Choose a reference recording whose tonal balance you want.");
-    learnButton.setTooltip ("Play your own material through Atelier while learning; Atelier averages its spectrum.");
-    applyButton.setTooltip ("Creates bell bands that move your learned input toward the reference.");
+    applyButton.onClick = [this]
+    {
+        capturing = 0;
+        refCapture.setToggleState (false, juce::dontSendNotification);
+        learnButton.setToggleState (false, juce::dontSendNotification);
+        applyMatch (yours, reference);
+    };
+    undoMatch.onClick = [this] { removeBands (matchBands); matchBands.clear(); lastFit = {}; updateMatchStatus(); };
+    refFile.setTooltip ("Use a recording whose tonal balance you want (WAV, AIFF, FLAC).");
+    refCapture.setTooltip ("Or play the reference through Atelier and capture it (click again to stop).");
+    learnButton.setTooltip ("Play YOUR material through Atelier while this is on; Atelier averages its spectrum.");
+    applyButton.setTooltip ("Replaces earlier match bands with bells that move your sound toward the reference.");
     for (auto* s : { &amount, &maxBands })
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);
-        s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 20);
-        addAndMakeVisible (s);
-    }
-    for (auto* sl : { &amount, &maxBands })
-    {
-        sl->setColour (juce::Slider::textBoxTextColourId, theme::ink);
-        sl->setColour (juce::Slider::textBoxOutlineColourId, theme::edge);
+        s->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        s->onValueChange = [this] { updateMatchStatus(); repaint(); };
     }
     amount.setRange (0, 100, 1);
-    amount.setValue (60);
-    amount.setTextValueSuffix (" %");
-    maxBands.setRange (1, 16, 1);
-    maxBands.setValue (8);
-    for (auto* b : { &refButton, &learnButton, &applyButton })
-        addAndMakeVisible (b);
+    amount.setValue (60, juce::dontSendNotification);
+    amount.setDefault (60);
+    amount.setTooltip (help::tooltip ("Amount", { "How much of the difference the match corrects.", "closer to the reference", "subtler" }));
+    maxBands.setRange (1, 12, 1);
+    maxBands.setValue (6, juce::dontSendNotification);
+    maxBands.setDefault (6);
+    maxBands.setTooltip (help::tooltip ("Max bands", { "How many bells the match may use.", "finer detail", "broader, more musical strokes" }));
+    for (juce::Component* c : { (juce::Component*) &refFile, (juce::Component*) &refCapture, (juce::Component*) &learnButton,
+                                (juce::Component*) &applyButton, (juce::Component*) &undoMatch, (juce::Component*) &amount, (juce::Component*) &maxBands })
+        addChildComponent (c);
 
     for (int b = 0; b < EQ::kMaxBands; ++b)
-        if (eq().bandOn (b)) { selected = b; break; }
+        if (eq().bandOn (b)) { selected = b; multi = { b }; break; }
     buildBandControls();
+    showTab (0);
     startTimerHz (25);
 }
 
-EqEditor::EQ& EqEditor::eq() { return static_cast<EQ&> (*nodePtr()->module); }
+sonic::Graph::Node* EqView::node() { return ui.proc.graph().node (nodeId); }
+EqView::EQ& EqView::eq() { return static_cast<EQ&> (*node()->module); }
 
-juce::Rectangle<float> EqEditor::plot() const
+int EqView::numBands() const
 {
-    return kDisplay.toFloat().withTrimmedLeft (64).withTrimmedRight (64).withTrimmedTop (52).withTrimmedBottom (44);
+    int n = 0;
+    for (int b = 0; b < EQ::kMaxBands; ++b) if (const_cast<EqView*> (this)->eq().bandOn (b)) ++n;
+    return n;
 }
 
-double EqEditor::range() const
+juce::Rectangle<int> EqView::side() const { return getLocalBounds().removeFromRight (344); }
+
+juce::Rectangle<float> EqView::plot() const
 {
-    if (! autoRange)
-        return fixedRange;
-    auto& m = const_cast<EqEditor*> (this)->eq();
+    return getLocalBounds().withTrimmedRight (344 + 22).toFloat().withTrimmedLeft (42).withTrimmedTop (30).withTrimmedBottom (22);
+}
+
+double EqView::range() const
+{
+    if (! autoRange) return fixedRange;
+    auto& m = const_cast<EqView*> (this)->eq();
     double mx = 0.25;
     for (int i = 0; i <= 120; ++i)
         mx = juce::jmax (mx, std::abs (m.responseDb (20.0 * std::pow (1000.0, i / 120.0)) - m.getParam (2)));
     return juce::jlimit (0.5, 30.0, mx * 1.3);
 }
 
-juce::Point<float> EqEditor::bandPoint (int b) const
+juce::Point<float> EqView::bandPoint (int b) const
 {
-    auto& m = const_cast<EqEditor*> (this)->eq();
+    auto& m = const_cast<EqView*> (this)->eq();
     const auto shape = (EQ::Shape) (int) m.getParam (EQ::bandParam (b, EQ::fShape));
     const double f = m.getParam (EQ::bandParam (b, EQ::fFreq));
     const bool gainShape = shape == EQ::Shape::bell || shape == EQ::Shape::lowShelf || shape == EQ::Shape::highShelf || shape == EQ::Shape::tilt;
@@ -161,200 +375,316 @@ juce::Point<float> EqEditor::bandPoint (int b) const
     return { plot::freqToX (f, plot()), plot::dbToY (juce::jlimit (-r, r, db), plot(), -r, r) };
 }
 
-int EqEditor::bandAt (juce::Point<float> p) const
+int EqView::bandAt (juce::Point<float> p) const
 {
-    auto& m = const_cast<EqEditor*> (this)->eq();
+    auto& m = const_cast<EqView*> (this)->eq();
     for (int b = EQ::kMaxBands - 1; b >= 0; --b)
         if (m.bandOn (b) && bandPoint (b).getDistanceFrom (p) < 11.0f)
             return b;
     return -1;
 }
 
-void EqEditor::selectBand (int b)
+void EqView::selectBand (int b, bool additive)
 {
+    if (! additive)
+        multi.clear();
+    if (b >= 0)
+    {
+        auto it = std::find (multi.begin(), multi.end(), b);
+        if (additive && it != multi.end() && multi.size() > 1)
+        {
+            multi.erase (it);
+            b = multi.front();
+        }
+        else if (it == multi.end())
+            multi.push_back (b);
+    }
     selected = b;
     buildBandControls();
     repaint();
 }
 
-void EqEditor::buildBandControls()
+void EqView::selectAllBands()
 {
-    bandChips.clear();
+    multi.clear();
+    for (int b = 0; b < EQ::kMaxBands; ++b) if (eq().bandOn (b)) multi.push_back (b);
+    selected = multi.empty() ? -1 : multi.front();
+    buildBandControls();
+    repaint();
+}
+
+void EqView::addBandAt (double f, double gdb)
+{
+    const int nb = eq().firstFreeBand();
+    if (nb < 0) return;
+    int shape = 0;
+    if (f < 30.0) shape = (int) EQ::Shape::lowCut;
+    else if (f > 16000.0) shape = (int) EQ::Shape::highCut;
+    auto& m = eq();
+    for (int fld = 1; fld < EQ::kParamsPerBand; ++fld)   // a fresh band: defaults first
+        m.setParam (EQ::bandParam (nb, fld), m.params()[(size_t) EQ::bandParam (nb, fld)].defaultValue);
+    m.setParam (EQ::bandParam (nb, EQ::fShape), (float) shape);
+    m.setParam (EQ::bandParam (nb, EQ::fFreq), (float) juce::jlimit (10.0, 22000.0, f));
+    m.setParam (EQ::bandParam (nb, EQ::fGain), shape == 0 ? (float) juce::jlimit (-30.0, 30.0, gdb) : 0.0f);
+    m.setParam (EQ::bandParam (nb, EQ::fQ), shape == 0 ? 1.0f : 0.7071f);
+    m.setParam (EQ::bandParam (nb, EQ::fOn), 1.0f);
+    ui.proc.checkpoint();
+    selectBand (nb);
+}
+
+void EqView::removeBands (std::vector<int> list)
+{
+    if (list.empty()) return;
+    for (int b : list)
+        eq().setParam (EQ::bandParam (b, EQ::fOn), 0.0f);
+    ui.proc.checkpoint();
+    multi.clear();
+    selected = -1;
+    buildBandControls();
+    repaint();
+}
+
+void EqView::deleteSelectedBands()
+{
+    auto list = multi;
+    if (list.empty() && selected >= 0) list.push_back (selected);
+    removeBands (list);
+}
+
+void EqView::showTab (int t)
+{
+    tab = t;
+    for (int i = 0; i < tabs.size(); ++i) tabs[i]->setToggleState (i == t, juce::dontSendNotification);
+    for (auto* b : { &prevBand, &nextBand, &addBand, &removeBand }) b->setVisible (t == 0);
+    for (auto* r : bandRows) r->setVisible (t == 0);
+    eqControls->setVisible (t == 1);
+    clearAll.setVisible (t == 1);
+    for (juce::Component* c : { (juce::Component*) &refFile, (juce::Component*) &refCapture, (juce::Component*) &learnButton,
+                                (juce::Component*) &applyButton, (juce::Component*) &undoMatch, (juce::Component*) &amount, (juce::Component*) &maxBands })
+        c->setVisible (t == 2);
+    resized();
+    repaint();
+}
+
+void EqView::buildBandControls()
+{
     bandRows.clear();
-    for (int b = 0; b < EQ::kMaxBands; ++b)
-    {
-        if (! eq().bandOn (b)) continue;
-        auto* c = bandChips.add (new juce::TextButton (juce::String (b + 1) + "  " + formatValue (eq().getParam (EQ::bandParam (b, EQ::fFreq)), "Hz")));
-        c->setToggleState (b == selected, juce::dontSendNotification);
-        c->onClick = [this, b] { selectBand (b); };
-        addAndMakeVisible (c);
-    }
     if (selected >= 0 && eq().bandOn (selected))
         for (int f = 1; f < EQ::kParamsPerBand; ++f)
         {
             auto* row = bandRows.add (new ModuleParamRow (ui.proc, eq(), EQ::bandParam (selected, f)));
             row->labelW = 96;
-            addAndMakeVisible (row);
+            addChildComponent (row);
+            row->setVisible (tab == 0);
         }
-    removeBand.setEnabled (selected >= 0);
+    removeBand.setEnabled (selected >= 0 || ! multi.empty());
     addBand.setEnabled (eq().firstFreeBand() >= 0);
     resized();
 }
 
-void EqEditor::resized()
+void EqView::resized()
 {
-    back.setBounds (kDisplay.getX() + 12, kDisplay.getY() + 8, 96, 24);
-    int x = kDisplay.getRight() - 12;
+    // range buttons along the top of the plot
+    auto pr = plot();
+    int x = (int) pr.getRight();
     for (int i = rangeButtons.size() - 1; i >= 0; --i)
     {
-        const int w = i == 6 ? 46 : 38;
+        const int w = i == 6 ? 40 : 32;
         x -= w;
-        rangeButtons[i]->setBounds (x, kDisplay.getY() + 9, w, 22);
-        x -= 4;
+        rangeButtons[i]->setBounds (x, (int) pr.getY() - 26, w, 20);
+        x -= 3;
     }
 
-    // band area
-    auto r = kLowerLeft.reduced (16, 0).withTrimmedTop (48);
-    auto chips = r.removeFromTop (26);
-    removeBand.setBounds (chips.removeFromRight (110));
-    chips.removeFromRight (6);
-    addBand.setBounds (chips.removeFromRight (96));
-    chips.removeFromRight (10);
-    for (auto* c : bandChips)
-    {
-        const int w = juce::jmin (100, juce::jmax (60, chips.getWidth() / juce::jmax (1, bandChips.size()) - 4));
-        c->setBounds (chips.removeFromLeft (w));
-        chips.removeFromLeft (4);
-    }
-    r.removeFromTop (12);
-    const int colW = (r.getWidth() - 24) / 2;
-    for (int i = 0; i < bandRows.size(); ++i)
-    {
-        const int col = i / 6, row = i % 6;
-        bandRows[i]->setBounds (r.getX() + col * (colW + 24), r.getY() + row * 30, colW, 26);
-    }
+    auto s = side();
+    auto tr = s.removeFromTop (26);
+    const int tw = (tr.getWidth() - 8) / 3;
+    for (auto* t : tabs) { t->setBounds (tr.removeFromLeft (tw)); tr.removeFromLeft (4); }
+    s.removeFromTop (12);
 
-    // processing area
-    auto p = kLowerRight.reduced (16, 0).withTrimmedTop (48);
-    p.removeFromTop (14);
-    phaseMode->setBounds (p.removeFromTop (26));
-    p.removeFromTop (6);
-    linQuality->setBounds (p.removeFromTop (26));
-    p.removeFromTop (6);
-    outputRow->setBounds (p.removeFromTop (26));
-    p.removeFromTop (36);
-    auto br = p.removeFromTop (26);
-    const int bw = (br.getWidth() - 8) / 3;
-    refButton.setBounds (br.removeFromLeft (bw));
-    br.removeFromLeft (4);
-    learnButton.setBounds (br.removeFromLeft (bw));
-    br.removeFromLeft (4);
-    applyButton.setBounds (br);
-    p.removeFromTop (4);
-    amount.setBounds (p.removeFromTop (22).withTrimmedLeft (90));
-    maxBands.setBounds (p.removeFromTop (22).withTrimmedLeft (90));
+    // BAND
+    {
+        auto r = s;
+        auto line = r.removeFromTop (24);
+        prevBand.setBounds (line.removeFromLeft (24));
+        line.removeFromLeft (4);
+        removeBand.setBounds (line.removeFromRight (74));
+        line.removeFromRight (4);
+        addBand.setBounds (line.removeFromRight (60));
+        line.removeFromRight (4);
+        nextBand.setBounds (line.removeFromRight (24));
+        r.removeFromTop (8);
+        for (auto* row : bandRows)
+        {
+            row->setBounds (r.removeFromTop (kRowH - 1));
+        }
+    }
+    // EQ
+    {
+        auto r = s;
+        clearAll.setBounds (r.removeFromBottom (26));
+        r.removeFromBottom (8);
+        eqControls->setBounds (r);
+    }
+    // MATCH
+    {
+        auto r = s.withTrimmedTop (18);
+        auto row1 = r.removeFromTop (26);
+        row1.removeFromLeft (92);
+        refFile.setBounds (row1.removeFromLeft ((row1.getWidth() - 4) / 2));
+        row1.removeFromLeft (4);
+        refCapture.setBounds (row1);
+        r.removeFromTop (8);
+        auto row2 = r.removeFromTop (26);
+        row2.removeFromLeft (92);
+        learnButton.setBounds (row2);
+        r.removeFromTop (14);
+        amount.setBounds (r.removeFromTop (24).withTrimmedLeft (92).withTrimmedRight (52));
+        r.removeFromTop (4);
+        maxBands.setBounds (r.removeFromTop (24).withTrimmedLeft (92).withTrimmedRight (52));
+        r.removeFromTop (12);
+        auto row3 = r.removeFromTop (28);
+        applyButton.setBounds (row3.removeFromLeft ((row3.getWidth() - 4) / 2));
+        row3.removeFromLeft (4);
+        undoMatch.setBounds (row3);
+    }
 }
 
-void EqEditor::analysisUpdated() { repaint (kDisplay); }
-
-void EqEditor::timerCallback()
+void EqView::updateMatchStatus()
 {
-    if (nodePtr() == nullptr) { if (onClose) onClose(); return; }
+    lastFit = {};
+    if (! reference.empty() && ! yours.empty())
+        lastFit = sonic::eqmatch::fit (yours, reference, amount.getValue() * 0.01, (int) maxBands.getValue(), ui.proc.currentSampleRate());
+    if (capturing == 1) matchStatus = "Capturing the reference: play it now. Click CAPTURE again to stop.";
+    else if (capturing == 2) matchStatus = "Capturing your sound: play your material now. Click CAPTURE again to stop.";
+    else if (reference.empty()) matchStatus = "1. Load or capture a reference.";
+    else if (yours.empty()) matchStatus = "2. Capture your own material.";
+    else if (lastFit.bands.empty()) matchStatus = "The two already match within 0.5 dB.";
+    else matchStatus = "3. Apply: " + juce::String ((int) lastFit.bands.size()) + " bands. The dashed curve is the difference, the solid one what the bands do.";
+    repaint();
+}
+
+bool EqView::applyMatch (const sonic::eqmatch::Spectrum& y, const sonic::eqmatch::Spectrum& ref)
+{
+    if (ref.empty() || y.empty())
+    {
+        matchStatus = ref.empty() ? "Load or capture a reference first." : "Capture your own material first.";
+        repaint();
+        return false;
+    }
+    yours = y;
+    reference = ref;
+    // replace earlier match bands
+    for (int b : matchBands)
+        eq().setParam (EQ::bandParam (b, EQ::fOn), 0.0f);
+    matchBands.clear();
+    lastFit = sonic::eqmatch::fit (yours, reference, amount.getValue() * 0.01, (int) maxBands.getValue(), ui.proc.currentSampleRate());
+    auto& m = eq();
+    for (auto& band : lastFit.bands)
+    {
+        const int b = m.firstFreeBand();
+        if (b < 0) break;
+        for (int fld = 1; fld < EQ::kParamsPerBand; ++fld)
+            m.setParam (EQ::bandParam (b, fld), m.params()[(size_t) EQ::bandParam (b, fld)].defaultValue);
+        m.setParam (EQ::bandParam (b, EQ::fShape), 0.0f);
+        m.setParam (EQ::bandParam (b, EQ::fFreq), (float) band.freq);
+        m.setParam (EQ::bandParam (b, EQ::fGain), (float) band.gainDb);
+        m.setParam (EQ::bandParam (b, EQ::fQ), (float) band.q);
+        m.setParam (EQ::bandParam (b, EQ::fOn), 1.0f);
+        matchBands.push_back (b);
+    }
+    ui.proc.checkpoint();
+    matchStatus = "Applied " + juce::String ((int) matchBands.size()) + " bands (earlier match bands replaced). Largest remaining difference "
+                  + juce::String (lastFit.largestRemainingDb, 1) + " dB.";
+    multi = matchBands;
+    selected = matchBands.empty() ? -1 : matchBands.front();
+    buildBandControls();
+    repaint();
+    return true;
+}
+
+void EqView::analysisUpdated()
+{
+    if (capturing != 0 && ui.res.serial != lastSerial && ui.res.xHasSignal && ui.res.spectrumX.size() > 8)
+    {
+        lastSerial = ui.res.serial;
+        auto& dst = capturing == 1 ? reference : yours;
+        const double binHz = ui.res.sampleRate / juce::jmax (1, ui.res.fftSize);
+        if (dst.power.size() != ui.res.spectrumX.size() || std::abs (dst.binHz - binHz) > 1e-9)
+        {
+            dst = {};
+            dst.binHz = binHz;
+            dst.power.assign (ui.res.spectrumX.size(), 0.0);
+        }
+        for (size_t k = 0; k < dst.power.size(); ++k)
+            dst.power[k] += std::pow (10.0, ui.res.spectrumX[k] / 10.0);
+        ++dst.frames;
+        if (dst.frames % 15 == 0) updateMatchStatus();
+    }
+    repaint (plot().toNearestInt().expanded (40, 30));
+}
+
+void EqView::sync()
+{
     for (auto* r : bandRows) r->sync();
-    phaseMode->sync();
-    linQuality->sync();
-    outputRow->sync();
+    eqControls->sync();
+}
+
+void EqView::timerCallback()
+{
+    if (node() == nullptr) return;
     if (eq().paramVersion() != lastVersion)
     {
         lastVersion = eq().paramVersion();
-        for (int i = 0, b = 0; b < EQ::kMaxBands; ++b)
-            if (eq().bandOn (b) && i < bandChips.size())
-                bandChips[i++]->setButtonText (juce::String (b + 1) + "  " + formatValue (eq().getParam (EQ::bandParam (b, EQ::fFreq)), "Hz"));
+        if (selected >= 0 && ! eq().bandOn (selected)) { multi.clear(); selected = -1; buildBandControls(); }
+        multi.erase (std::remove_if (multi.begin(), multi.end(), [this] (int b) { return ! eq().bandOn (b); }), multi.end());
+        repaint();
     }
-    if (learnButton.getToggleState() && ui.res.xHasSignal && ! ui.res.spectrumX.empty())
-    {
-        if (learnPow.size() != ui.res.spectrumX.size())
-        {
-            learnPow.assign (ui.res.spectrumX.size(), 0.0);
-            learnFrames = 0;
-        }
-        learnBinHz = ui.res.sampleRate / ui.res.fftSize;
-        for (size_t k = 0; k < learnPow.size(); ++k)
-            learnPow[k] += std::pow (10.0, ui.res.spectrumX[k] / 10.0);
-        ++learnFrames;
-    }
-    repaint (kDisplay);
 }
 
-void EqEditor::paint (juce::Graphics& g)
+void EqView::paint (juce::Graphics& g)
 {
-    g.fillAll (theme::bg);
     auto& m = eq();
     const auto pr = plot();
     const double r = range();
 
-    // ---- display ----
-    theme::drawPanel (g, kDisplay);
-    {
-        auto h = kDisplay.withHeight (44).withTrimmedLeft (124);
-        const auto tf = theme::heading (27.0f);
-        g.setColour (theme::ink);
-        g.setFont (tf);
-        g.drawText ("Equaliser", h, juce::Justification::centredLeft);
-        const int w = juce::GlyphArrangement::getStringWidthInt (tf, "Equaliser");
-        g.setColour (theme::textFaint);
-        g.setFont (theme::mono (10.0f));
-        g.drawText (juce::String (nodePtr()->name).toUpperCase(), h.withTrimmedLeft (w + 14).translated (0, 3), juce::Justification::centredLeft);
-        g.setFont (theme::sans (12.0f));
-        g.drawText (juce::String (juce::CharPointer_UTF8 ("Double-click to add \xc2\xb7 drag (Shift: fine) \xc2\xb7 wheel for Q \xc2\xb7 right-click for shape \xc2\xb7 double-click a value to type it")),
-                    kDisplay.withHeight (44).withTrimmedLeft (470).withTrimmedRight (330), juce::Justification::centredLeft, true);
-    }
-
-    // ---- dense grid: every 1-2-3...9 step, labels at the readable ones ----
-    {
-        g.setColour (theme::sheet);
-        g.fillRect (pr);
-        g.setFont (theme::mono (9.5f));
-        for (double dec : { 10.0, 100.0, 1000.0, 10000.0 })
-            for (int k = 1; k <= 9; ++k)
-            {
-                const double f = dec * k;
-                if (f < 20.0 || f > 20000.0) continue;
-                const float x = plot::freqToX (f, pr);
-                const bool major = k == 1;
-                g.setColour (major ? theme::gridMajor : (k == 2 || k == 5 ? theme::gridMajor.withAlpha (0.6f) : theme::grid));
-                g.drawVerticalLine ((int) x, pr.getY(), pr.getBottom());
-            }
-        for (double f : { 20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 150.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0, 1000.0,
-                          1500.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0, 10000.0, 15000.0, 20000.0 })
+    // ---- dense grid ----
+    g.setColour (theme::sheet);
+    g.fillRect (pr);
+    g.setFont (theme::mono (9.5f));
+    for (double dec : { 10.0, 100.0, 1000.0, 10000.0 })
+        for (int k = 1; k <= 9; ++k)
         {
-            const float x = plot::freqToX (f, pr);
-            const bool major = f == 100.0 || f == 1000.0 || f == 10000.0;
-            g.setColour (major ? theme::text : theme::textFaint);
-            const auto lab = f >= 1000.0 ? numText (f / 1000.0, f == 1500.0 ? 1 : 0) + "k" : juce::String ((int) f);
-            g.drawText (lab, juce::Rectangle<float> (x - 18.0f, pr.getBottom() + 5.0f, 36.0f, 12.0f), juce::Justification::centred);
+            const double f = dec * k;
+            if (f < 20.0 || f > 20000.0) continue;
+            g.setColour (k == 1 ? theme::gridMajor : (k == 2 || k == 5 ? theme::gridMajor.withAlpha (0.6f) : theme::grid));
+            g.drawVerticalLine ((int) plot::freqToX (f, pr), pr.getY(), pr.getBottom());
         }
-        // dB grid: major/minor steps that suit the range
-        const double major = r >= 24 ? 6.0 : r >= 12 ? 3.0 : r >= 6 ? 1.0 : r >= 3 ? 0.5 : r >= 1 ? 0.25 : 0.1;
-        const double minor = major / (r >= 12 ? 3.0 : 2.0);
-        for (double db = -std::floor (r / minor) * minor; db <= r + 1e-9; db += minor)
+    for (double f : { 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0 })
+    {
+        const float x = plot::freqToX (f, pr);
+        g.setColour (f == 100.0 || f == 1000.0 || f == 10000.0 ? theme::text : theme::textFaint);
+        g.drawText (f >= 1000.0 ? numText (f / 1000.0, 0) + "k" : juce::String ((int) f),
+                    juce::Rectangle<float> (x - 18.0f, pr.getBottom() + 5.0f, 36.0f, 12.0f), juce::Justification::centred);
+    }
+    const double major = r >= 24 ? 6.0 : r >= 12 ? 3.0 : r >= 6 ? 1.0 : r >= 3 ? 0.5 : r >= 1 ? 0.25 : 0.1;
+    const double minor = major / (r >= 12 ? 3.0 : 2.0);
+    for (double db = -std::floor (r / minor) * minor; db <= r + 1e-9; db += minor)
+    {
+        const float y = plot::dbToY (db, pr, -r, r);
+        const bool isMajor = std::abs (std::remainder (db, major)) < 1e-6;
+        g.setColour (std::abs (db) < 1e-9 ? theme::ink.withAlpha (0.6f) : (isMajor ? theme::gridMajor : theme::grid));
+        g.drawHorizontalLine ((int) y, pr.getX(), pr.getRight());
+        if (isMajor)
         {
-            const float y = plot::dbToY (db, pr, -r, r);
-            const bool isMajor = std::abs (std::remainder (db, major)) < 1e-6;
-            g.setColour (std::abs (db) < 1e-9 ? theme::ink.withAlpha (0.6f) : (isMajor ? theme::gridMajor : theme::grid));
-            g.drawHorizontalLine ((int) y, pr.getX(), pr.getRight());
-            if (isMajor)
-            {
-                g.setColour (std::abs (db) < 1e-9 ? theme::text : theme::textFaint);
-                g.drawText ((db > 0 ? "+" : "") + numText (db, major < 0.5 ? 2 : (major < 1 ? 1 : 0)),
-                            juce::Rectangle<float> (pr.getX() - 58, y - 6, 50, 12), juce::Justification::centredRight);
-            }
+            g.setColour (std::abs (db) < 1e-9 ? theme::text : theme::textFaint);
+            g.drawText ((db > 0 ? "+" : "") + numText (db, major < 0.5 ? 2 : (major < 1 ? 1 : 0)),
+                        juce::Rectangle<float> (pr.getX() - 42, y - 6, 36, 12), juce::Justification::centredRight);
         }
     }
 
     g.saveState();
     g.reduceClipRegion (pr.toNearestInt());
-    // analyser (output) behind the curves, mapped to -96..0 over the plot height
+    // analyser (output) behind the curves
     if (ui.res.spectrumY.size() > 4)
     {
         const double binHz = ui.res.sampleRate / ui.res.fftSize;
@@ -382,35 +712,29 @@ void EqEditor::paint (juce::Graphics& g)
     const float y0 = plot::dbToY (0.0, pr, -r, r);
     const double outDb = m.getParam (2);
 
-    // per-band shapes, each in its own colour
-    for (int b = 0; b < EQ::kMaxBands; ++b)
+    // selected bands shaded in camel
+    for (int b : multi)
     {
         if (! m.bandOn (b)) continue;
-        if (b != selected) continue;   // only the selected band is shaded (camel), like a pattern piece
-        const auto c = theme::logo;
         juce::Path band;
         band.startNewSubPath (pr.getX(), y0);
         for (int i = 0; i <= N; ++i)
             band.lineTo (xAt (i), yOf (m.bandResponseDb (b, fAt (i))));
         band.lineTo (pr.getRight(), y0);
         band.closeSubPath();
-        g.setColour (c.withAlpha (0.22f));
+        g.setColour (theme::logo.withAlpha (b == selected ? 0.24f : 0.14f));
         g.fillPath (band);
     }
 
-    // dynamic bands: the range as a shaded curve between "static" and "full range",
-    // plus the live gain as a solid curve - like Pro-Q
+    // dynamic bands: the range they can move through (hatched) and where they are now
     std::vector<double> total ((size_t) N + 1);
     for (int i = 0; i <= N; ++i) total[(size_t) i] = m.responseDb (fAt (i)) - outDb;
     for (int b = 0; b < EQ::kMaxBands; ++b)
     {
-        if (! m.bandOn (b) || m.getParam (EQ::bandParam (b, EQ::fDyn)) < 0.5f) continue;
-        const auto c = theme::oxblood;
-        const double gStatic = m.getParam (EQ::bandParam (b, EQ::fGain));
-        const double gFull = gStatic + m.getParam (EQ::bandParam (b, EQ::fRange));
+        if (! m.bandOn (b) || m.getParam (EQ::bandParam (b, EQ::fDyn)) < 0.5f || ! m.isParamRelevant (EQ::bandParam (b, EQ::fRange))) continue;
+        const double gFull = m.getParam (EQ::bandParam (b, EQ::fGain)) + m.getParam (EQ::bandParam (b, EQ::fRange));
         const double gNow = m.dynamicGainDb (b);
-        // only where the band actually moves the curve
-        juce::Path full, now, area;
+        juce::Path now, area;
         bool inside = false;
         std::vector<juce::Point<float>> topPts, basePts;
         auto flush = [&]
@@ -433,13 +757,11 @@ void EqEditor::paint (juce::Graphics& g)
             const double own = m.bandResponseDb (b, f);
             const double ownFull = m.bandResponseDbWithGain (b, f, gFull);
             const bool active = std::abs (ownFull - own) > 0.03;
-            const float yFull = yOf (total[(size_t) i] - own + ownFull);
             const float yNow = yOf (total[(size_t) i] - own + m.bandResponseDbWithGain (b, f, gNow));
             if (active)
             {
-                if (! inside) { full.startNewSubPath (xAt (i), yFull); now.startNewSubPath (xAt (i), yNow); }
-                else { full.lineTo (xAt (i), yFull); now.lineTo (xAt (i), yNow); }
-                topPts.push_back ({ xAt (i), yFull });
+                if (! inside) now.startNewSubPath (xAt (i), yNow); else now.lineTo (xAt (i), yNow);
+                topPts.push_back ({ xAt (i), yOf (total[(size_t) i] - own + ownFull) });
                 basePts.push_back ({ xAt (i), yOf (total[(size_t) i]) });
             }
             else if (inside)
@@ -447,17 +769,33 @@ void EqEditor::paint (juce::Graphics& g)
             inside = active;
         }
         flush();
-        theme::hatch (g, area, c, 0.6f, 4.0f, false);
-        juce::Path dashedFull;
-        const float dash[] = { 5.0f, 4.0f };
-        juce::PathStrokeType (1.3f).createDashedStroke (dashedFull, full, dash, 2);
-        g.setColour (c.withAlpha (0.85f));
-        g.fillPath (dashedFull);
-        g.setColour (c);
+        theme::hatch (g, area, theme::oxblood, 0.55f, 4.0f, false);
+        g.setColour (theme::oxblood);
         g.strokePath (now, juce::PathStrokeType (1.6f));
     }
 
-    // composite (static) curve, glowing
+    // EQ match: what is wanted (dashed) and what the bands would do (thin)
+    if (tab == 2 && ! lastFit.gridHz.empty())
+    {
+        auto pathOf = [&] (const std::vector<double>& v)
+        {
+            juce::Path p;
+            for (size_t i = 0; i < v.size(); ++i)
+            {
+                const float x = plot::freqToX (lastFit.gridHz[i], pr), y = yOf (v[i]);
+                if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+            }
+            return p;
+        };
+        juce::Path d;
+        const float dash[] = { 5.0f, 4.0f };
+        juce::PathStrokeType (1.4f).createDashedStroke (d, pathOf (lastFit.wantedDb), dash, 2);
+        g.setColour (theme::oxblood);
+        g.fillPath (d);
+        g.strokePath (pathOf (lastFit.fittedDb), juce::PathStrokeType (1.0f));
+    }
+
+    // composite curve
     juce::Path curve;
     for (int i = 0; i <= N; ++i)
     {
@@ -467,49 +805,51 @@ void EqEditor::paint (juce::Graphics& g)
     g.setColour (theme::ink);
     g.strokePath (curve, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-    // band handles (+ the dynamic target handle)
+    // band handles
     for (int b = 0; b < EQ::kMaxBands; ++b)
     {
         if (! m.bandOn (b)) continue;
-        const auto p = bandPoint (b);
-        const bool sel = b == selected;
-        if (m.getParam (EQ::bandParam (b, EQ::fDyn)) > 0.5f)
-        {
-            const double f = m.getParam (EQ::bandParam (b, EQ::fFreq));
-            const double gFull = m.getParam (EQ::bandParam (b, EQ::fGain)) + m.getParam (EQ::bandParam (b, EQ::fRange));
-            const double dbFull = m.responseDb (f) - outDb - m.bandResponseDb (b, f) + m.bandResponseDbWithGain (b, f, gFull);
-            const float yf = yOf (dbFull);
-            g.setColour (theme::oxblood);
-            g.drawLine (p.x, p.y, p.x, yf, 0.8f);
-            juce::Path d;
-            d.addRectangle (-4.0f, -4.0f, 8.0f, 8.0f);
-            d.applyTransform (juce::AffineTransform::rotation (juce::MathConstants<float>::pi * 0.25f).translated (p.x, yf));
-            g.setColour (theme::card);
-            g.fillPath (d);
-            g.setColour (theme::oxblood);
-            g.strokePath (d, juce::PathStrokeType (1.2f));
-        }
-        theme::numberedHandle (g, p, b + 1, sel, theme::ink, sel ? 12.0f : 10.5f);
-    }
-    g.restoreState();
-    g.setColour (theme::ink);
-    g.drawRect (pr.expanded (0.5f), 1.0f);
-    for (int i = 0; i <= 300; ++i)
-    {
-        const float x = pr.getX() + pr.getWidth() * (float) i / 300.0f;
-        g.setColour (theme::textFaint);
-        g.drawLine (x, pr.getBottom(), x, pr.getBottom() + 3.0f, 0.6f);
+        const bool sel = std::find (multi.begin(), multi.end(), b) != multi.end();
+        theme::numberedHandle (g, bandPoint (b), b + 1, sel, theme::ink, b == selected ? 12.0f : 10.5f);
     }
 
+    // value readout next to the band(s) being dragged
+    if (dragBand >= 0 && m.bandOn (dragBand))
+    {
+        const auto p = bandPoint (dragBand);
+        const auto shape = (EQ::Shape) (int) m.getParam (EQ::bandParam (dragBand, EQ::fShape));
+        const bool gainShape = m.isParamRelevant (EQ::bandParam (dragBand, EQ::fGain));
+        juce::String t = formatValue (m.getParam (EQ::bandParam (dragBand, EQ::fFreq)), "Hz");
+        if (gainShape) t << "   " << formatValue (m.getParam (EQ::bandParam (dragBand, EQ::fGain)), "dB");
+        t << "   Q " << numText (m.getParam (EQ::bandParam (dragBand, EQ::fQ)), 2);
+        juce::ignoreUnused (shape);
+        const float w = (float) juce::GlyphArrangement::getStringWidthInt (theme::mono (11.0f), t) + 18.0f;
+        auto box = juce::Rectangle<float> (p.x + 16.0f, p.y - 34.0f, w, 22.0f);
+        if (box.getRight() > pr.getRight()) box.setX (p.x - 16.0f - w);
+        if (box.getY() < pr.getY()) box.setY (p.y + 14.0f);
+        g.setColour (theme::ink);
+        g.fillRect (box);
+        g.setColour (theme::card);
+        g.setFont (theme::mono (11.0f));
+        g.drawText (t, box, juce::Justification::centred);
+    }
+    // lasso
+    if (lasso)
+        dashedRect (g, juce::Rectangle<float> (dragStart, lassoEnd), theme::ink);
+    g.restoreState();
+
+    g.setColour (theme::ink);
+    g.drawRect (pr.expanded (0.5f), 1.0f);
+
     // hover crosshair + reading
-    if (pr.contains (hover) && dragBand < 0)
+    if (pr.contains (hover) && dragBand < 0 && ! lasso)
     {
         const double f = plot::xToFreq (hover.x, pr);
-        g.setColour (theme::oxblood.withAlpha (0.6f));
+        g.setColour (theme::oxblood.withAlpha (0.5f));
         g.drawVerticalLine ((int) hover.x, pr.getY(), pr.getBottom());
         const auto txt = formatValue (f, "Hz") + "  " + plot::noteName (f) + "   " + juce::String (plot::yToDb (hover.y, pr, -r, r), r < 4 ? 2 : 1) + " dB";
-        auto box = juce::Rectangle<float> (hover.x + 12.0f, hover.y - 30.0f, 200.0f, 22.0f);
-        if (box.getRight() > pr.getRight()) box.setX (hover.x - 212.0f);
+        auto box = juce::Rectangle<float> (hover.x + 12.0f, hover.y - 30.0f, 196.0f, 22.0f);
+        if (box.getRight() > pr.getRight()) box.setX (hover.x - 208.0f);
         g.setColour (theme::card);
         g.fillRect (box);
         g.setColour (theme::ink);
@@ -519,138 +859,214 @@ void EqEditor::paint (juce::Graphics& g)
         g.drawText (txt, box, juce::Justification::centred);
     }
 
+    // caption above the plot
     g.setColour (theme::textFaint);
     g.setFont (theme::mono (9.5f));
     const char* modes[] = { "ZERO LATENCY", "NATURAL PHASE", "LINEAR PHASE" };
-    g.drawText (juce::String (modes[(int) m.getParam (0)]) + "  -  LATENCY " + juce::String (m.latencySamples()) + " SMP  -  ANALYSER: OUTPUT",
-                kDisplay.withTrimmedLeft (64).removeFromBottom (22), juce::Justification::centredLeft);
-    if ((int) m.getParam (0) == 2)
-        g.drawText ("LINEAR MODE: DYNAMIC BANDS ACT STATICALLY", kDisplay.withTrimmedRight (64).removeFromBottom (22), juce::Justification::centredRight);
+    g.drawText (juce::String (juce::CharPointer_UTF8 ("CLICK TO ADD \xc2\xb7 DRAG TO MOVE (SHIFT FINE) \xc2\xb7 DRAG EMPTY SPACE TO SELECT \xc2\xb7 DEL REMOVES \xc2\xb7 WHEEL = Q   \xe2\x80\x94  "))
+                    + modes[(int) m.getParam (0)],
+                juce::Rectangle<int> ((int) pr.getX(), (int) pr.getY() - 26, (int) pr.getWidth() - 280, 20), juce::Justification::centredLeft, true);
 
-    // ---- band panel ----
-    theme::drawPanel (g, kLowerLeft, "Band", selected >= 0 ? "band " + juce::String (selected + 1) + " - " + kShapeShort[(int) m.getParam (EQ::bandParam (selected, EQ::fShape))]
-                                                          : "no band selected");
-    if (bandRows.isEmpty())
-    {
-        g.setColour (theme::textDim);
-        g.setFont (theme::sans (13.0f));
-        g.drawText ("Double-click the curve to add a band, or click + ADD BAND. Up to 24 bands.",
-                    kLowerLeft.withTrimmedTop (100), juce::Justification::centredTop);
-    }
-
-    // ---- processing panel ----
-    theme::drawPanel (g, kLowerRight, "Processing");
-    auto p = kLowerRight.reduced (16, 0).withTrimmedTop (48);
-    g.setColour (theme::textDim);
-    g.setFont (theme::mono (9.5f));
-    g.drawText ("PHASE MODE / LINEAR QUALITY", p.withHeight (12), juce::Justification::centredLeft);
-    auto mb = juce::Rectangle<int> (p.getX() - 6, refButton.getY() - 26, p.getWidth() + 12, kLowerRight.getBottom() - 8 - (refButton.getY() - 26));
-    g.setColour (theme::card);
-    g.fillRect (mb);
+    // ---- side column ----
+    auto s = side();
     g.setColour (theme::ink);
-    g.drawRect (mb, 1);
-    g.setColour (theme::beigeText);
-    g.drawText (theme::q ("eq match") + (refName.isNotEmpty() ? "   REF: " + refName.toUpperCase() : juce::String()),
-                mb.reduced (8, 0).withHeight (22), juce::Justification::centredLeft, true);
-    g.setColour (theme::textDim);
-    g.setFont (theme::sans (12.0f));
-    g.drawText ("Amount", juce::Rectangle<int> (p.getX(), amount.getY(), 86, 22), juce::Justification::centredLeft);
-    g.drawText ("Max bands", juce::Rectangle<int> (p.getX(), maxBands.getY(), 86, 22), juce::Justification::centredLeft);
-    g.drawFittedText (matchStatus.isNotEmpty() ? matchStatus : "1. Load a reference  2. Learn your input  3. Apply",
-                      juce::Rectangle<int> (p.getX(), maxBands.getBottom() + 2, p.getWidth(), mb.getBottom() - maxBands.getBottom() - 4), juce::Justification::topLeft, 2);
+    g.drawVerticalLine (s.getX() - 12, (float) s.getY(), (float) s.getBottom());
+    if (tab == 0)
+    {
+        auto line = s.withTrimmedTop (38).withHeight (24);
+        line.removeFromLeft (30);
+        g.setColour (theme::ink);
+        g.setFont (theme::heading (19.0f));
+        const juce::String t = selected >= 0 ? "Band " + juce::String (selected + 1) : juce::String ("No band");
+        g.drawText (t, line.withWidth (120), juce::Justification::centredLeft);
+        g.setColour (theme::textFaint);
+        g.setFont (theme::mono (9.0f));
+        if (multi.size() > 1)
+            g.drawText (juce::String ((int) multi.size()) + " SELECTED", line.withTrimmedLeft (72).withWidth (100), juce::Justification::centredLeft);
+        else if (selected >= 0)
+            g.drawText (kShapeShort[(int) m.getParam (EQ::bandParam (selected, EQ::fShape))], line.withTrimmedLeft (72).withWidth (100), juce::Justification::centredLeft);
+        if (bandRows.isEmpty())
+        {
+            g.setColour (theme::textDim);
+            g.setFont (theme::sans (12.5f));
+            g.drawFittedText ("Click the curve to add a band. Drag across empty space to select several bands, then press Delete to remove them.",
+                              s.withTrimmedTop (80).withHeight (80), juce::Justification::topLeft, 4);
+        }
+    }
+    else if (tab == 2)
+    {
+        auto r = s.withTrimmedTop (38);
+        g.setFont (theme::mono (9.5f));
+        g.setColour (theme::textDim);
+        auto lab = [&] (juce::Rectangle<int> area, const juce::String& t) { g.drawText (t, area.withWidth (88), juce::Justification::centredLeft); };
+        lab (refFile.getBounds().withX (s.getX()), "REFERENCE");
+        lab (learnButton.getBounds().withX (s.getX()), "YOURS");
+        lab (amount.getBounds().withX (s.getX()), "AMOUNT");
+        lab (maxBands.getBounds().withX (s.getX()), "MAX BANDS");
+        g.setColour (theme::text);
+        g.drawText (juce::String (juce::roundToInt (amount.getValue())) + " %", amount.getBounds().withX (amount.getRight() + 4).withWidth (48), juce::Justification::centredRight);
+        g.drawText (juce::String (juce::roundToInt (maxBands.getValue())), maxBands.getBounds().withX (maxBands.getRight() + 4).withWidth (48), juce::Justification::centredRight);
+        g.setColour (theme::textFaint);
+        auto info = [&] (const sonic::eqmatch::Spectrum& sp, const juce::String& name)
+        {
+            return sp.empty() ? juce::String ("-") : (name.isNotEmpty() ? name.toUpperCase() + "  " : juce::String()) + juce::String (sp.frames) + " FRAMES";
+        };
+        g.drawText (info (reference, refName), refFile.getBounds().translated (0, 26).withX (s.getX() + 92).withWidth (s.getWidth() - 92).withHeight (12),
+                    juce::Justification::centredLeft, true);
+        g.drawText (info (yours, {}), learnButton.getBounds().translated (0, 26).withX (s.getX() + 92).withWidth (s.getWidth() - 92).withHeight (12),
+                    juce::Justification::centredLeft, true);
+        g.setColour (theme::textDim);
+        g.setFont (theme::sans (12.0f));
+        g.drawFittedText (matchStatus, juce::Rectangle<int> (s.getX(), applyButton.getBottom() + 10, s.getWidth(), s.getBottom() - applyButton.getBottom() - 10),
+                          juce::Justification::topLeft, 4);
+        juce::ignoreUnused (r);
+    }
 }
 
-void EqEditor::mouseMove (const juce::MouseEvent& e)
+void EqView::mouseMove (const juce::MouseEvent& e)
 {
     hover = e.position;
-    setMouseCursor (bandAt (e.position) >= 0 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
-    repaint (kDisplay);
+    setMouseCursor (bandAt (e.position) >= 0 ? juce::MouseCursor::DraggingHandCursor
+                    : plot().contains (e.position) ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    repaint (plot().toNearestInt().expanded (40, 30));
 }
 
-void EqEditor::mouseDown (const juce::MouseEvent& e)
+void EqView::mouseExit (const juce::MouseEvent&)
 {
+    hover = { -1, -1 };
+    repaint (plot().toNearestInt().expanded (40, 30));
+}
+
+void EqView::mouseDown (const juce::MouseEvent& e)
+{
+    grabKeyboardFocus();
     const int b = bandAt (e.position);
+    lasso = false;
+    pressOnEmpty = false;
     if (e.mods.isPopupMenu())
     {
-        if (b >= 0) { selectBand (b); bandMenu (b); }
+        if (b >= 0)
+        {
+            if (std::find (multi.begin(), multi.end(), b) == multi.end()) selectBand (b);
+            bandMenu (b);
+        }
+        else if (plot().contains (e.position))
+            canvasMenu (e.position);
         return;
     }
-    dragBand = b;
+    dragStart = e.position;
+    lassoEnd = e.position;
     if (b >= 0)
     {
-        if (b != selected) selectBand (b);
-        dragStart = e.position;
-        startFreq = eq().getParam (EQ::bandParam (b, EQ::fFreq));
-        startGain = eq().getParam (EQ::bandParam (b, EQ::fGain));
+        const bool additive = e.mods.isCtrlDown() || e.mods.isCommandDown();
+        if (additive) selectBand (b, true);
+        else if (std::find (multi.begin(), multi.end(), b) == multi.end()) selectBand (b);
+        else { selected = b; buildBandControls(); }
+        dragBand = b;
+        dragOrigin.clear();
+        for (int k : multi)
+            dragOrigin.push_back ({ eq().getParam (EQ::bandParam (k, EQ::fFreq)), eq().getParam (EQ::bandParam (k, EQ::fGain)) });
+        return;
     }
+    dragBand = -1;
+    pressOnEmpty = plot().contains (e.position);
 }
 
-void EqEditor::mouseDrag (const juce::MouseEvent& e)
+void EqView::mouseDrag (const juce::MouseEvent& e)
 {
+    if (pressOnEmpty)
+    {
+        if (! lasso && e.position.getDistanceFrom (dragStart) > 5.0f) lasso = true;
+        if (lasso)
+        {
+            lassoEnd = e.position;
+            const auto area = juce::Rectangle<float> (dragStart, lassoEnd);
+            if (! (e.mods.isCtrlDown() || e.mods.isCommandDown())) multi.clear();
+            for (int b = 0; b < EQ::kMaxBands; ++b)
+                if (eq().bandOn (b) && area.contains (bandPoint (b)) && std::find (multi.begin(), multi.end(), b) == multi.end())
+                    multi.push_back (b);
+            selected = multi.empty() ? -1 : multi.front();
+            repaint();
+        }
+        return;
+    }
     if (dragBand < 0) return;
     const auto pr = plot();
     const double r = range();
     const bool fine = e.mods.isShiftDown();
     const float dx = (e.position.x - dragStart.x) * (fine ? 0.2f : 1.0f);
     const float dy = (e.position.y - dragStart.y) * (fine ? 0.2f : 1.0f);
-    const double f = plot::xToFreq (plot::freqToX (startFreq, pr) + dx, pr);
-    eq().setParam (EQ::bandParam (dragBand, EQ::fFreq), (float) juce::jlimit (10.0, 22000.0, f));
-    const auto shape = (EQ::Shape) (int) eq().getParam (EQ::bandParam (dragBand, EQ::fShape));
-    if (shape == EQ::Shape::bell || shape == EQ::Shape::lowShelf || shape == EQ::Shape::highShelf || shape == EQ::Shape::tilt)
+    for (size_t i = 0; i < multi.size() && i < dragOrigin.size(); ++i)
     {
-        const double scale = (shape == EQ::Shape::bell ? 1.0 : 2.0) * 2.0 * r / pr.getHeight();
-        eq().setParam (EQ::bandParam (dragBand, EQ::fGain), (float) juce::jlimit (-30.0, 30.0, startGain - dy * scale));
+        const int b = multi[i];
+        const double f = plot::xToFreq (plot::freqToX (dragOrigin[i].first, pr) + dx, pr);
+        eq().setParam (EQ::bandParam (b, EQ::fFreq), (float) juce::jlimit (10.0, 22000.0, f));
+        if (eq().isParamRelevant (EQ::bandParam (b, EQ::fGain)))
+        {
+            const auto shape = (EQ::Shape) (int) eq().getParam (EQ::bandParam (b, EQ::fShape));
+            const double scale = (shape == EQ::Shape::bell ? 1.0 : 2.0) * 2.0 * r / pr.getHeight();
+            eq().setParam (EQ::bandParam (b, EQ::fGain), (float) juce::jlimit (-30.0, 30.0, dragOrigin[i].second - dy * scale));
+        }
     }
-    repaint (kDisplay);
+    repaint();
 }
 
-void EqEditor::mouseUp (const juce::MouseEvent&)
+void EqView::mouseUp (const juce::MouseEvent& e)
 {
-    if (dragBand >= 0) ui.proc.checkpoint();
-    dragBand = -1;
-}
-
-void EqEditor::mouseDoubleClick (const juce::MouseEvent& e)
-{
-    const int b = bandAt (e.position);
-    if (b >= 0)
+    if (pressOnEmpty && ! lasso && plot().contains (e.position))
+        addBandAt (plot::xToFreq (e.position.x, plot()), plot::yToDb (e.position.y, plot(), -range(), range()));
+    else if (lasso)
     {
-        eq().setParam (EQ::bandParam (b, EQ::fOn), 0.0f);
+        selected = multi.empty() ? -1 : multi.front();
+        buildBandControls();
+    }
+    else if (dragBand >= 0 && e.getDistanceFromDragStart() > 0)
         ui.proc.checkpoint();
-        selectBand (-1);
-        return;
-    }
-    const auto pr = plot();
-    if (! pr.contains (e.position)) return;
-    const int nb = eq().firstFreeBand();
-    if (nb < 0) return;
-    const double f = plot::xToFreq (e.position.x, pr);
-    const double gdb = plot::yToDb (e.position.y, pr, -range(), range());
-    // shape suggestion by position: far left = low cut, far right = high cut
-    int shape = 0;
-    if (f < 30.0) shape = (int) EQ::Shape::lowCut;
-    else if (f > 16000.0) shape = (int) EQ::Shape::highCut;
-    eq().setParam (EQ::bandParam (nb, EQ::fShape), (float) shape);
-    eq().setParam (EQ::bandParam (nb, EQ::fFreq), (float) f);
-    eq().setParam (EQ::bandParam (nb, EQ::fGain), shape == 0 ? (float) juce::jlimit (-30.0, 30.0, gdb) : 0.0f);
-    eq().setParam (EQ::bandParam (nb, EQ::fQ), shape == 0 ? 1.0f : 0.7071f);
-    eq().setParam (EQ::bandParam (nb, EQ::fOn), 1.0f);
-    ui.proc.checkpoint();
-    selectBand (nb);
+    lasso = false;
+    pressOnEmpty = false;
+    dragBand = -1;
+    repaint();
 }
 
-void EqEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+void EqView::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    // double-click a band: back to 0 dB
+    const int b = bandAt (e.position);
+    if (b >= 0 && eq().isParamRelevant (EQ::bandParam (b, EQ::fGain)))
+    {
+        eq().setParam (EQ::bandParam (b, EQ::fGain), 0.0f);
+        ui.proc.checkpoint();
+        repaint();
+    }
+}
+
+void EqView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
     int b = bandAt (e.position);
     if (b < 0) b = selected;
-    if (b < 0) return;
+    if (b < 0 || ! plot().contains (e.position)) return;
+    float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? -w.deltaX : w.deltaY;
+    if (w.isReversed) d = -d;
+    const float step = e.mods.isShiftDown() ? 0.4f : 1.5f;    // ~4 % per notch (Shift: ~1 %)
     const float q = eq().getParam (EQ::bandParam (b, EQ::fQ));
-    eq().setParam (EQ::bandParam (b, EQ::fQ), juce::jlimit (0.025f, 40.0f, q * std::pow (1.15f, w.deltaY * 8.0f)));
-    ui.proc.checkpoint();
-    repaint (kDisplay);
+    eq().setParam (EQ::bandParam (b, EQ::fQ), juce::jlimit (0.025f, 40.0f, q * std::pow (1.12f, d * step)));
+    repaint();
 }
 
-void EqEditor::bandMenu (int b)
+bool EqView::keyPressed (const juce::KeyPress& k)
+{
+    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
+    {
+        if (multi.empty() && selected < 0) return false;
+        deleteSelectedBands();
+        return true;
+    }
+    if (k == juce::KeyPress ('a', juce::ModifierKeys::commandModifier, 0)) { selectAllBands(); return true; }
+    if (k == juce::KeyPress::escapeKey && multi.size() > 1) { selectBand (selected); return true; }
+    return false;
+}
+
+void EqView::bandMenu (int b)
 {
     juce::PopupMenu shapes, slopes, places, m;
     const int shape = (int) eq().getParam (EQ::bandParam (b, EQ::fShape));
@@ -661,14 +1077,18 @@ void EqEditor::bandMenu (int b)
     const int place = (int) eq().getParam (EQ::bandParam (b, EQ::fPlace));
     const char* pl[] = { "Stereo", "Left", "Right", "Mid", "Side" };
     for (int i = 0; i < 5; ++i) places.addItem (300 + i, pl[i], true, i == place);
+    m.addSectionHeader ("Band " + juce::String (b + 1));
     m.addSubMenu ("Shape", shapes);
-    m.addSubMenu ("Slope (cuts)", slopes);
+    m.addSubMenu ("Slope", slopes, eq().isParamRelevant (EQ::bandParam (b, EQ::fSlope)));
     m.addSubMenu ("Placement", places);
-    m.addItem (400, "Dynamic", true, eq().getParam (EQ::bandParam (b, EQ::fDyn)) > 0.5f);
+    m.addItem (400, "Dynamic", eq().isParamRelevant (EQ::bandParam (b, EQ::fDyn)), eq().getParam (EQ::bandParam (b, EQ::fDyn)) > 0.5f);
+    m.addItem (401, "Reset gain to 0 dB", eq().isParamRelevant (EQ::bandParam (b, EQ::fGain)));
     m.addSeparator();
-    m.addItem (500, "Remove band");
-    juce::Component::SafePointer<EqEditor> safe (this);
-    m.showMenuAsync ({}, [safe, b] (int r)
+    if (multi.size() > 1)
+        m.addItem (juce::PopupMenu::Item ("Remove " + juce::String ((int) multi.size()) + " selected bands").setID (501).setColour (theme::danger));
+    m.addItem (juce::PopupMenu::Item ("Remove band").setID (500).setColour (theme::danger));
+    juce::Component::SafePointer<EqView> safe (this);
+    m.showMenuAsync (ui.menuOptions(), [safe, b] (int r)
     {
         if (safe == nullptr || r == 0) return;
         auto& q = safe->eq();
@@ -676,484 +1096,203 @@ void EqEditor::bandMenu (int b)
         else if (r >= 200 && r < 208) q.setParam (EQ::bandParam (b, EQ::fSlope), (float) (r - 200));
         else if (r >= 300 && r < 305) q.setParam (EQ::bandParam (b, EQ::fPlace), (float) (r - 300));
         else if (r == 400) q.setParam (EQ::bandParam (b, EQ::fDyn), q.getParam (EQ::bandParam (b, EQ::fDyn)) > 0.5f ? 0.0f : 1.0f);
-        else if (r == 500) { q.setParam (EQ::bandParam (b, EQ::fOn), 0.0f); safe->selected = -1; }
+        else if (r == 401) q.setParam (EQ::bandParam (b, EQ::fGain), 0.0f);
+        else if (r == 500) { safe->removeBands ({ b }); return; }
+        else if (r == 501) { safe->deleteSelectedBands(); return; }
         safe->ui.proc.checkpoint();
         safe->buildBandControls();
         safe->repaint();
     });
 }
 
-void EqEditor::loadReference()
+void EqView::canvasMenu (juce::Point<float> p)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("Equaliser");
+    m.addItem (1, "Add a band here", eq().firstFreeBand() >= 0);
+    m.addItem (2, "Select all bands", numBands() > 0);
+    m.addItem (juce::PopupMenu::Item ("Remove all bands").setID (3).setEnabled (numBands() > 0).setColour (theme::danger));
+    juce::Component::SafePointer<EqView> safe (this);
+    m.showMenuAsync (ui.menuOptions(), [safe, p] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        if (r == 1) safe->addBandAt (plot::xToFreq (p.x, safe->plot()), plot::yToDb (p.y, safe->plot(), -safe->range(), safe->range()));
+        else if (r == 2) safe->selectAllBands();
+        else if (r == 3) { safe->selectAllBands(); safe->deleteSelectedBands(); }
+    });
+}
+
+void EqView::loadReference()
 {
     chooser = std::make_unique<juce::FileChooser> ("Choose a reference recording", juce::File::getSpecialLocation (juce::File::userMusicDirectory),
                                                    "*.wav;*.aif;*.aiff;*.flac;*.ogg");
-    juce::Component::SafePointer<EqEditor> safe (this);
+    juce::Component::SafePointer<EqView> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe] (const juce::FileChooser& fc)
     {
         if (safe == nullptr || fc.getResult() == juce::File()) return;
         std::unique_ptr<juce::AudioFormatReader> reader (safe->ui.proc.formats().createReaderFor (fc.getResult()));
         if (reader == nullptr) { safe->matchStatus = "Could not read that file."; safe->repaint(); return; }
-        const int fft = 8192;
-        const auto len = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 120.0));
+        // same analysis as the live captures (FFT size and window), so both are comparable
+        const int fft = safe->ui.res.fftSize > 0 ? safe->ui.res.fftSize : 4096;
+        const auto len = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 180.0));
         juce::AudioBuffer<float> buf ((int) juce::jmin (2u, reader->numChannels), len);
         reader->read (&buf, 0, len, 0, true, buf.getNumChannels() > 1);
         std::vector<float> mono ((size_t) len);
         for (int i = 0; i < len; ++i)
-            mono[(size_t) i] = buf.getNumChannels() > 1 ? 0.5f * (buf.getSample (0, i) + buf.getSample (1, i)) : buf.getSample (0, i);
-        std::vector<double> pow ((size_t) fft / 2 + 1, 0.0);
-        int frames = 0;
-        for (int s = 0; s + fft <= len; s += fft / 2)
+            mono[(size_t) i] = buf.getSample (0, i);   // left channel, like the live analysis
+        sonic::eqmatch::Spectrum s;
+        s.binHz = reader->sampleRate / fft;
+        s.power.assign ((size_t) fft / 2 + 1, 0.0);
+        for (int at = 0; at + fft <= len; at += fft / 2)
         {
-            auto sp = sonic::computeSpectrum (mono.data() + s, fft, fft, reader->sampleRate, sonic::WindowType::hann);
-            for (size_t k = 0; k < pow.size(); ++k) pow[k] += sp.amplitude[k] * sp.amplitude[k];
-            ++frames;
+            const auto sp = sonic::computeSpectrum (mono.data() + at, fft, fft, reader->sampleRate, safe->ui.res.window);
+            for (size_t k = 0; k < s.power.size(); ++k) s.power[k] += sp.amplitude[k] * sp.amplitude[k];
+            ++s.frames;
         }
-        if (frames == 0) { safe->matchStatus = "Reference is too short."; safe->repaint(); return; }
-        safe->refFreq.clear();
-        safe->refDb.clear();
-        for (size_t k = 1; k < pow.size(); ++k)
-        {
-            safe->refFreq.push_back (k * reader->sampleRate / fft);
-            safe->refDb.push_back (10.0 * std::log10 (pow[k] / frames + 1e-20));
-        }
+        if (s.frames == 0) { safe->matchStatus = "That reference is too short."; safe->repaint(); return; }
+        safe->reference = s;
         safe->refName = fc.getResult().getFileNameWithoutExtension();
-        safe->matchStatus = "Reference analysed (" + juce::String (len / reader->sampleRate, 1) + " s). Now learn your input.";
-        safe->repaint();
+        safe->updateMatchStatus();
     });
 }
 
-void EqEditor::computeMatch()
-{
-    if (refDb.empty()) { matchStatus = "Load a reference first."; repaint(); return; }
-    if (learnFrames < 10 || learnPow.empty()) { matchStatus = "Learn your input first (play audio while LEARN is on)."; repaint(); return; }
+// ================================================================== SATURATION VIEW
 
-    // both spectra on a log grid with 1/3-octave power smoothing
-    const int G = 240;
-    std::vector<double> fGrid ((size_t) G), diff ((size_t) G);
-    auto smoothAt = [] (double f, auto&& powAtFreq) { return powAtFreq (f); };
-    juce::ignoreUnused (smoothAt);
-    auto refPow = [this] (double f0, double f1)
+SaturationView::SaturationView (Ui& u, int id, PreviewEngine& e)
+    : ui (u), nodeId (id),
+      figure (u, id, e, sonic::preview::harmonics | sonic::preview::transfer),
+      controls (u, id, [] (int i) { return i == 0 || (i >= 2 && i <= 10); })
+{
+    for (int i = 0; i < Sat::kNumRecipes; ++i)
     {
-        double s = 0; int n = 0;
-        for (size_t k = 0; k < refFreq.size(); ++k)
-            if (refFreq[k] >= f0 && refFreq[k] <= f1) { s += std::pow (10.0, refDb[k] / 10.0); ++n; }
-        return n > 0 ? 10.0 * std::log10 (s / n + 1e-20) : -200.0;
-    };
-    auto curPow = [this] (double f0, double f1)
-    {
-        double s = 0; int n = 0;
-        for (size_t k = 1; k < learnPow.size(); ++k)
-        {
-            const double f = k * learnBinHz;
-            if (f >= f0 && f <= f1) { s += learnPow[k] / learnFrames; ++n; }
-        }
-        return n > 0 ? 10.0 * std::log10 (s / n + 1e-20) : -200.0;
-    };
-    const double third = std::pow (2.0, 1.0 / 6.0);
-    double meanDiff = 0.0; int meanN = 0;
-    for (int i = 0; i < G; ++i)
-    {
-        const double f = 25.0 * std::pow (18000.0 / 25.0, (double) i / (G - 1));
-        fGrid[(size_t) i] = f;
-        const double d = refPow (f / third, f * third) - curPow (f / third, f * third);
-        diff[(size_t) i] = d;
-        if (f > 100.0 && f < 10000.0 && d > -150.0 && d < 150.0) { meanDiff += d; ++meanN; }
+        auto* b = recipes.add (new juce::TextButton (juce::String (Sat::recipe (i).name).toUpperCase()));
+        b->setTooltip (juce::String (Sat::recipe (i).name) + ": " + Sat::recipe (i).description);
+        b->onClick = [this, i] { sat().applyRecipe (i); ui.proc.checkpoint(); repaint(); };
+        addAndMakeVisible (b);
     }
-    if (meanN == 0) { matchStatus = "Not enough overlapping spectrum to compare."; repaint(); return; }
-    meanDiff /= meanN;
-    const double amt = amount.getValue() * 0.01;
-    for (auto& d : diff) d = juce::jlimit (-12.0, 12.0, (d - meanDiff)) * amt;
-
-    // greedy bell fitting
-    auto& m = eq();
-    int placed = 0;
-    for (int it = 0; it < (int) maxBands.getValue(); ++it)
-    {
-        int peak = 0;
-        for (int i = 0; i < G; ++i)
-            if (std::abs (diff[(size_t) i]) > std::abs (diff[(size_t) peak])) peak = i;
-        const double gain = diff[(size_t) peak];
-        if (std::abs (gain) < 0.5) break;
-        int lo = peak, hi = peak;
-        while (lo > 0 && std::abs (diff[(size_t) lo]) > std::abs (gain) * 0.5 && diff[(size_t) lo] * gain > 0) --lo;
-        while (hi < G - 1 && std::abs (diff[(size_t) hi]) > std::abs (gain) * 0.5 && diff[(size_t) hi] * gain > 0) ++hi;
-        const double bwOct = juce::jmax (0.2, std::log2 (fGrid[(size_t) hi] / fGrid[(size_t) lo]));
-        const double q = juce::jlimit (0.3, 6.0, std::sqrt (std::pow (2.0, bwOct)) / (std::pow (2.0, bwOct) - 1.0));
-        const int b = m.firstFreeBand();
-        if (b < 0) break;
-        m.setParam (EQ::bandParam (b, EQ::fShape), 0.0f);
-        m.setParam (EQ::bandParam (b, EQ::fFreq), (float) fGrid[(size_t) peak]);
-        m.setParam (EQ::bandParam (b, EQ::fGain), (float) gain);
-        m.setParam (EQ::bandParam (b, EQ::fQ), (float) q);
-        m.setParam (EQ::bandParam (b, EQ::fPlace), 0.0f);
-        m.setParam (EQ::bandParam (b, EQ::fDyn), 0.0f);
-        m.setParam (EQ::bandParam (b, EQ::fOn), 1.0f);
-        for (int i = 0; i < G; ++i)
-            diff[(size_t) i] -= m.bandResponseDb (b, fGrid[(size_t) i]);
-        ++placed;
-    }
-    double rest = 0.0;
-    for (auto d : diff) rest = juce::jmax (rest, std::abs (d));
-    matchStatus = "Added " + juce::String (placed) + " bands. Largest remaining difference " + juce::String (rest, 1) + " dB.";
-    ui.proc.checkpoint();
-    buildBandControls();
-    repaint();
+    addAndMakeVisible (figure);
+    addAndMakeVisible (controls);
 }
 
-// ================================================================== SATURATION EDITOR
+SaturationView::Sat& SaturationView::sat() { return static_cast<Sat&> (*ui.proc.graph().node (nodeId)->module); }
 
-namespace
+juce::Rectangle<int> SaturationView::designerArea() const
 {
-    const juce::Rectangle<int> kCards { 24, 16, 1000, 404 };
-    const juce::Rectangle<int> kPreview { 1040, 16, 536, 404 };
-    const juce::Rectangle<int> kDesigner { 24, 436, 1000, 476 };
-    const juce::Rectangle<int> kStage { 1040, 436, 536, 476 };
+    auto r = getLocalBounds().removeFromLeft ((int) (getWidth() * 0.33f));
+    r.removeFromTop (2 * 26 + 8 + 30);
+    return r.withTrimmedLeft (34).withTrimmedBottom (20);
 }
 
-SaturationEditor::SaturationEditor (Ui& u, int id) : BlockEditor (u, id)
+juce::Rectangle<float> SaturationView::column (int k) const
 {
-    back.onClick = [this] { if (onClose) onClose(); };
-    back.getProperties().set ("link", true);
-    back.getProperties().set ("colour", (int) theme::accent.getARGB());
-    addAndMakeVisible (back);
-    auto& m = sat();
-    for (int i = 0; i < m.numParams(); ++i)
-    {
-        const auto& s = m.params()[(size_t) i];
-        const juce::String grp (s.group);
-        if (grp == "Shape" || grp == "Focus")
-            addAndMakeVisible (shapeRows.add (new ModuleParamRow (ui.proc, m, i)));
-        else if (s.id == "drive_db" || s.id == "output_db")
-            addAndMakeVisible (knobs.add (new ModuleKnob (ui.proc, m, i, s.id == "drive_db")));
-        else if (grp == "Stage" || grp == "Tone")
-            addAndMakeVisible (stageRows.add (new ModuleParamRow (ui.proc, m, i)));
-    }
-    struct MixKnob : public juce::Component
-    {
-        MixKnob (Ui& u, int id) : ui (u), nid (id)
-        {
-            s.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-            s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-            s.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
-            s.setRange (0, 100, 0.1);
-            s.setDefault (100.0);
-            s.setTextValueSuffix (" %");
-            s.setNumDecimalPlacesToDisplay (0);
-            s.valueArea = [this] { return getLocalBounds().removeFromBottom (18).reduced (8, 0) - s.getPosition(); };
-            s.getProperties().set ("beige", true);
-            if (auto* n = ui.proc.graph().node (nid)) s.setValue (n->mix.load() * 100.0, juce::dontSendNotification);
-            s.onValueChange = [this] { if (auto* n = ui.proc.graph().node (nid)) n->mix = (float) s.getValue() * 0.01f; repaint(); };
-            s.onDragEnd = [this] { ui.proc.checkpoint(); };
-            addAndMakeVisible (s);
-        }
-        void resized() override { s.setBounds (getLocalBounds().withTrimmedBottom (34)); }
-        void mouseDoubleClick (const juce::MouseEvent&) override { s.beginTextEntry(); }
-        void paint (juce::Graphics& g) override
-        {
-            auto r = getLocalBounds().removeFromBottom (32);
-            g.setColour (theme::ink); g.setFont (theme::heading (17.0f));
-            g.drawText ("Mix", r.removeFromTop (17), juce::Justification::centred);
-            g.setColour (theme::textDim); g.setFont (theme::mono (9.5f));
-            g.drawText (juce::String (juce::roundToInt (s.getValue())) + " %", r, juce::Justification::centred);
-        }
-        Ui& ui; int nid; AtelierSlider s;
-    };
-    mixKnob = std::make_unique<MixKnob> (ui, nodeId);
-    addAndMakeVisible (*mixKnob);
-    renderPreview();
-    startTimerHz (15);
+    const auto d = designerArea().toFloat();
+    const float bw = (d.getWidth() - 8 * 8.0f) / 9.0f;
+    return { d.getX() + k * (bw + 8.0f), d.getY(), bw, d.getHeight() };
 }
 
-SaturationEditor::Sat& SaturationEditor::sat() { return static_cast<Sat&> (*nodePtr()->module); }
-
-juce::Rectangle<int> SaturationEditor::cardRect (int i) const
+void SaturationView::resized()
 {
-    auto r = kCards.reduced (16, 0).withTrimmedTop (54);
-    const int w = (r.getWidth() - 30) / 4, h = 150;
-    return { r.getX() + (i % 4) * (w + 10), r.getY() + (i / 4) * (h + 10), w, h };
+    auto r = getLocalBounds();
+    auto left = r.removeFromLeft ((int) (getWidth() * 0.33f));
+    auto chips = left.removeFromTop (26 * 2 + 4);
+    const int w = (chips.getWidth() - 12) / 4;
+    for (int i = 0; i < recipes.size(); ++i)
+        recipes[i]->setBounds (chips.getX() + (i % 4) * (w + 4), chips.getY() + (i / 4) * 30, w, 26);
+    r.removeFromLeft (26);
+    figure.setBounds (r.removeFromLeft ((int) (getWidth() * 0.21f)));
+    r.removeFromLeft (26);
+    controls.setBounds (r);
 }
 
-juce::Rectangle<int> SaturationEditor::designerArea() const
+void SaturationView::sync()
 {
-    return kDesigner.reduced (16, 0).withTrimmedTop (56).withHeight (210).withTrimmedLeft (44);
-}
-
-void SaturationEditor::resized()
-{
-    back.setBounds (kCards.getRight() - 108, kCards.getY() + 8, 96, 24);
-    auto r = kDesigner.reduced (16, 0).withTrimmedTop (290);
-    const int colW = (r.getWidth() - 24) / 2;
-    for (int i = 0; i < shapeRows.size(); ++i)
-        shapeRows[i]->setBounds (r.getX() + (i / 4) * (colW + 24), r.getY() + (i % 4) * 30, colW, 26);
-
-    auto s = kStage.reduced (16, 0).withTrimmedTop (52);
-    auto kr = s.removeFromTop (118);
-    const int kw = kr.getWidth() / 3;
-    if (knobs.size() > 0) knobs[0]->setBounds (kr.removeFromLeft (kw));
-    if (knobs.size() > 1) knobs[1]->setBounds (kr.removeFromLeft (kw));
-    mixKnob->setBounds (kr);
-    s.removeFromTop (14);
-    for (auto* row : stageRows)
-    {
-        row->setBounds (s.removeFromTop (26));
-        s.removeFromTop (4);
-    }
-}
-
-void SaturationEditor::timerCallback()
-{
-    if (nodePtr() == nullptr) { if (onClose) onClose(); return; }
-    for (auto* r : shapeRows) r->sync();
-    for (auto* r : stageRows) r->sync();
-    for (auto* k : knobs) k->sync();
+    controls.sync();
+    const int active = (int) sat().getParam (0);
+    for (int i = 0; i < recipes.size(); ++i)
+        recipes[i]->setToggleState (i == active, juce::dontSendNotification);
     if (sat().paramVersion() != lastVersion)
     {
         lastVersion = sat().paramVersion();
-        renderPreview();
-        repaint();
+        repaint (getLocalBounds().removeFromLeft ((int) (getWidth() * 0.33f)));
     }
 }
 
-void SaturationEditor::renderPreview()
+void SaturationView::paint (juce::Graphics& g)
 {
-    // Offline render of an identical copy of this block: exact, independent of what is playing.
-    const double fs = 48000.0;
-    auto measure = [&] (double f, double db, sonic::HarmonicResult& hr, double& aliasDb)
-    {
-        sonic::SaturationModule copy;
-        for (int i = 0; i < copy.numParams(); ++i)
-            copy.setParam (i, sat().getParam (i));
-        copy.prepare (fs, 512, 2);
-        sonic::SignalGenerator gen;
-        gen.prepare (fs);
-        gen.frequencyHz = (float) f;
-        gen.levelDb = (float) db;
-        const int n = 32768;
-        std::vector<float> l ((size_t) n), r ((size_t) n);
-        for (int i = 0; i < n; i += 512)
-        {
-            gen.render (l.data() + i, r.data() + i, 512);
-            float* ch[2] = { l.data() + i, r.data() + i };
-            copy.process (ch, 2, 512);
-        }
-        auto spec = sonic::computeSpectrum (l.data(), n, 16384, fs, sonic::WindowType::blackmanHarris4);
-        hr = sonic::analyseHarmonics (spec, f, 10, 20000.0);
-        double sum = 0.0;
-        for (int k = (int) (100 / spec.binHz()); k < (int) ((f - 500) / spec.binHz()); ++k)
-            sum += spec.power[(size_t) k];
-        aliasDb = sonic::gainToDb (std::sqrt (4.0 * sum / (spec.fftSize * spec.windowSumSq))) - (hr.valid ? hr.levelDbfs[0] : 0.0);
-    };
-    sonic::HarmonicResult h, h7;
-    double dummy = 0.0, alias = 0.0;
-    measure (1000.0, -18.0, h, dummy);
-    measure (7000.0, -6.0, h7, alias);
-    previewValid = h.valid;
-    previewDbc.clear();
-    double even = 0.0, odd = 0.0;
-    if (h.valid)
-        for (int k = 1; k < h.numHarmonics; ++k)
-        {
-            previewDbc.push_back (h.levelDbc[(size_t) k]);
-            const double p = std::pow (10.0, h.levelDbc[(size_t) k] / 10.0);
-            ((k + 1) % 2 == 0 ? even : odd) += p;
-        }
-    previewThd = h.thdPercent;
-    previewEven = even + odd > 0 ? even / (even + odd) * 100.0 : 50.0;
-    previewAlias = alias;
-}
-
-void SaturationEditor::paint (juce::Graphics& g)
-{
-    g.fillAll (theme::bg);
     auto& m = sat();
-    const int active = (int) m.getParam (0);
-
-    // ---- character cards ----
-    theme::drawPanel (g, kCards, "Harmonic character", "Fig. 04 - pick a recipe, then shape it below");
-    for (int i = 0; i < Sat::kNumRecipes; ++i)
-    {
-        const auto& rc = Sat::recipe (i);
-        auto r = cardRect (i);
-        const bool on = i == active;
-        theme::drawCard (g, r.toFloat(), on ? theme::accent : theme::edge, on, juce::Colours::transparentBlack, i == 7 && ! on);
-        auto t = r.reduced (12);
-        g.setColour (theme::ink);
-        g.setFont (theme::heading (27.0f));
-        g.drawText (rc.name, t.removeFromTop (28), juce::Justification::centredLeft);
-        auto bars = t.removeFromTop (44).withTrimmedTop (4);
-        if (i < 7)
-            for (int k = 0; k < 6; ++k)
-            {
-                const float hgt = juce::jlimit (0.06f, 1.0f, (rc.levelsDbc[k] + 60.0f) / 60.0f) * (float) bars.getHeight();
-                harmBar (g, juce::Rectangle<float> ((float) bars.getX() + k * 16.0f, (float) bars.getBottom() - hgt, 10.0f, hgt), k, on ? 1.0f : 0.8f);
-            }
-        else
-        {
-            g.setColour (theme::textDim);
-            g.setFont (theme::mono (10.0f));
-            g.drawText ("+ DRAW YOUR OWN", bars, juce::Justification::centredLeft);
-        }
-        t.removeFromTop (6);
-        g.setColour (on ? theme::text : theme::textDim);
-        g.setFont (theme::sans (12.0f));
-        g.drawFittedText (rc.description, t, juce::Justification::topLeft, 3);
-        if (on)
-            theme::drawTag (g, juce::Rectangle<int> (r.getRight() - 66, r.getY() + 10, 54, 15), "ACTIVE", theme::accent, theme::edge, theme::card);
-    }
-    g.setColour (theme::textDim);
-    g.setFont (theme::mono (9.5f));
-    auto legend = kCards.reduced (16, 0).removeFromBottom (26);
-    harmBar (g, juce::Rectangle<float> ((float) legend.getX(), (float) legend.getCentreY() - 5, 10.0f, 10.0f), 0);
-    g.setColour (theme::textDim);
-    g.drawText ("EVEN  H2 H4 H6", legend.withTrimmedLeft (16), juce::Justification::centredLeft);
-    harmBar (g, juce::Rectangle<float> ((float) legend.getX() + 140, (float) legend.getCentreY() - 5, 10.0f, 10.0f), 1);
-    g.setColour (theme::textDim);
-    g.drawText ("ODD  H3 H5 H7", legend.withTrimmedLeft (156), juce::Justification::centredLeft);
-
-    // ---- preview ----
-    theme::drawPanel (g, kPreview, "Preview");
-    theme::drawTag (g, juce::Rectangle<int> (kPreview.getRight() - 216, kPreview.getY() + 14, 200, 16), juce::String (juce::CharPointer_UTF8 ("MEASURED \xc2\xb7 1 KHZ \xc2\xb7 -18 DBFS")),
-                    theme::accent, theme::edge, theme::bg);
-    auto pv = kPreview.reduced (16, 0).withTrimmedTop (56);
-    auto tc = pv.removeFromLeft (200).withHeight (200);
-    g.setColour (theme::textDim);
-    g.setFont (theme::mono (9.5f));
-    g.drawText ("TRANSFER CURVE", tc.translated (0, -16).withHeight (12), juce::Justification::centredLeft);
-    g.setColour (theme::sheet);
-    g.fillRect (tc);
-    g.setColour (theme::edge);
-    g.drawHorizontalLine (tc.getCentreY(), (float) tc.getX(), (float) tc.getRight());
-    g.drawVerticalLine (tc.getCentreX(), (float) tc.getY(), (float) tc.getBottom());
-    {
-        juce::Path p;
-        double ymax = 0.05;
-        std::vector<double> ys (201);
-        for (int i = 0; i <= 200; ++i) { ys[(size_t) i] = m.staticCurve (-1.0 + i / 100.0); ymax = juce::jmax (ymax, std::abs (ys[(size_t) i])); }
-        for (int i = 0; i <= 200; ++i)
-        {
-            const float x = (float) tc.getX() + tc.getWidth() * i / 200.0f;
-            const float y = (float) tc.getCentreY() - (float) (ys[(size_t) i] / ymax) * tc.getHeight() * 0.48f;
-            if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
-        }
-        g.setColour (theme::beige);
-        g.strokePath (p, juce::PathStrokeType (1.8f));
-    }
-    pv.removeFromLeft (16);
-    auto hb = pv.withHeight (200);
-    g.setColour (theme::textDim);
-    g.drawText ("HARMONICS (dBc)", hb.translated (0, -16).withHeight (12), juce::Justification::centredLeft);
-    g.setColour (theme::sheet);
-    g.fillRect (hb);
-    if (previewValid)
-    {
-        const int n = (int) previewDbc.size();
-        const float bw = (hb.getWidth() - 16.0f) / juce::jmax (1, n);
-        for (int k = 0; k < n; ++k)
-        {
-            const float h = juce::jlimit (0.0f, 1.0f, (float) (previewDbc[(size_t) k] + 100.0) / 100.0f) * (hb.getHeight() - 20.0f);
-            harmBar (g, juce::Rectangle<float> (hb.getX() + 8.0f + k * bw + bw * 0.25f, hb.getBottom() - 16.0f - h, bw * 0.5f, h), k);
-            g.setColour (theme::textDim);
-            g.drawText (juce::String (k + 2), juce::Rectangle<float> (hb.getX() + 8.0f + k * bw, (float) hb.getBottom() - 14.0f, bw, 12.0f), juce::Justification::centred);
-        }
-    }
-    auto stats = kPreview.reduced (16, 0).withTrimmedTop (290).withHeight (60);
-    auto stat = [&] (juce::Rectangle<int> r, const juce::String& l, const juce::String& v)
-    {
-        g.setColour (theme::textDim); g.setFont (theme::mono (9.5f));
-        g.drawText (l, r.removeFromTop (14), juce::Justification::centredLeft);
-        g.setColour (theme::text); g.setFont (theme::sansMedium (19.0f));
-        g.drawText (v, r.removeFromTop (26), juce::Justification::centredLeft);
-    };
-    const int sw = stats.getWidth() / 3;
-    stat (stats.removeFromLeft (sw), "THD", juce::String (previewThd, previewThd < 1 ? 3 : 2) + " %");
-    stat (stats.removeFromLeft (sw), "EVEN : ODD", juce::String (juce::roundToInt (previewEven)) + " : " + juce::String (100 - juce::roundToInt (previewEven)));
-    stat (stats, "ALIASING (7 KHZ)", previewAlias < -150 ? juce::String ("< -150 dB") : juce::String (juce::roundToInt (previewAlias)) + " dB");
-
-    // ---- designer ----
-    theme::drawPanel (g, kDesigner, "Harmonic designer", "Drag bars - level per harmonic for a full-scale sine at the shaper");
     auto d = designerArea();
+    g.setColour (theme::textDim);
     g.setFont (theme::mono (9.5f));
+    g.drawText ("HARMONIC DESIGNER  -  DRAG THE BARS", juce::Rectangle<int> (d.getX() - 34, d.getY() - 24, d.getWidth() + 34, 14), juce::Justification::centredLeft);
     for (int db = 0; db >= -80; db -= 20)
     {
-        const float y = d.getY() + (float) (-db) / 90.0f * (d.getHeight() - 18);
-        g.setColour (theme::textDim);
-        g.drawText (juce::String (db), juce::Rectangle<float> ((float) d.getX() - 44, y - 6, 38, 12), juce::Justification::centredRight);
+        const float y = d.getY() + (float) (-db) / 90.0f * d.getHeight();
+        g.setColour (theme::textFaint);
+        g.drawText (juce::String (db), juce::Rectangle<float> ((float) d.getX() - 34, y - 6, 28, 12), juce::Justification::centredRight);
     }
-    const int nb = 9;
-    const float bw = (d.getWidth() - (nb - 1) * 12.0f) / nb;
-    for (int k = 0; k < nb; ++k)
+    for (int k = 0; k < 9; ++k)
     {
-        auto col = juce::Rectangle<float> (d.getX() + k * (bw + 12.0f), (float) d.getY(), bw, (float) d.getHeight() - 18.0f);
+        auto col = column (k);
         g.setColour (theme::sheet);
         g.fillRect (col);
         g.setColour (theme::edge);
         g.drawRect (col, 1.0f);
         const float v = m.getParam (2 + k);
         const float h = juce::jlimit (0.0f, 1.0f, (v + 90.0f) / 90.0f) * col.getHeight();
-        harmBar (g, col.withTop (col.getBottom() - h).reduced (col.getWidth() * 0.28f, 0.0f), k);
-        // the handle you drag: a camel rule across the column
+        fig::harmonicBar (g, col.withTop (col.getBottom() - h).reduced (col.getWidth() * 0.26f, 0.0f), k);
         g.setColour (theme::accent);
-        g.fillRect (col.getX() + 6.0f, col.getBottom() - h - 1.5f, col.getWidth() - 12.0f, 3.0f);
+        g.fillRect (col.getX() + 3.0f, col.getBottom() - h - 1.5f, col.getWidth() - 6.0f, 3.0f);
         g.setColour (theme::ink);
-        g.setFont (theme::heading (16.0f));
+        g.setFont (theme::heading (15.0f));
         g.drawText ("H" + juce::String (k + 2), juce::Rectangle<float> (col.getX(), col.getBottom() + 2, col.getWidth(), 16), juce::Justification::centred);
-        g.setFont (theme::mono (9.5f));
+        g.setFont (theme::mono (9.0f));
         g.setColour (theme::textDim);
-        g.drawText (v <= -89.9f ? juce::String ("OFF") : juce::String (juce::roundToInt (v)), col.withHeight (14).translated (0, 4), juce::Justification::centred);
+        g.drawText (v <= -89.9f ? juce::String ("OFF") : juce::String (juce::roundToInt (v)), col.withHeight (14).translated (0, 3), juce::Justification::centred);
     }
-    drawDashedH (g, (float) kDesigner.getX() + 1, (float) kDesigner.getRight() - 1, (float) kDesigner.getY() + 280.0f, theme::dashed);
-
-    // ---- stage ----
-    theme::drawPanel (g, kStage, "Stage");
-    g.setColour (theme::textDim);
-    g.setFont (theme::sans (12.5f));
-    g.drawFittedText ("Drive sets how hard you push; the character sets which harmonics appear. Auto gain keeps the level steady "
-                      "so you judge tone, not volume.", kStage.reduced (16, 0).withTrimmedTop (176 + stageRows.size() * 30).withHeight (50),
-                      juce::Justification::topLeft, 3);
 }
 
-void SaturationEditor::setHarmonicFromMouse (juce::Point<float> p)
+void SaturationView::setHarmonicFromMouse (juce::Point<float> p)
 {
-    auto d = designerArea();
-    const int nb = 9;
-    const float bw = (d.getWidth() - (nb - 1) * 12.0f) / nb;
     if (dragHarmonic < 0)
     {
-        const int k = (int) ((p.x - d.getX()) / (bw + 12.0f));
-        if (k < 0 || k >= nb || ! d.toFloat().contains (p)) return;
-        dragHarmonic = k;
+        for (int k = 0; k < 9; ++k)
+            if (column (k).expanded (4.0f, 0.0f).contains (p)) { dragHarmonic = k; break; }
+        if (dragHarmonic < 0) return;
     }
-    const float h = (float) d.getHeight() - 18.0f;
-    const float v = juce::jlimit (-90.0f, 0.0f, -90.0f + (d.getY() + h - p.y) / h * 90.0f);
+    const auto col = column (dragHarmonic);
+    const float v = juce::jlimit (-90.0f, 0.0f, -90.0f + (col.getBottom() - p.y) / col.getHeight() * 90.0f);
     sat().setParam (2 + dragHarmonic, v);
-    sat().setParam (0, 7.0f); // Custom
-    repaint (kDesigner);
+    repaint (designerArea().expanded (40, 30));
 }
 
-void SaturationEditor::mouseDown (const juce::MouseEvent& e)
+void SaturationView::mouseDown (const juce::MouseEvent& e)
 {
-    for (int i = 0; i < Sat::kNumRecipes; ++i)
-        if (cardRect (i).contains (e.getPosition()))
-        {
-            sat().applyRecipe (i);
-            ui.proc.checkpoint();
-            repaint();
-            return;
-        }
     dragHarmonic = -1;
-    if (designerArea().contains (e.getPosition()))
+    if (designerArea().expanded (4, 0).contains (e.getPosition()))
         setHarmonicFromMouse (e.position);
 }
 
-void SaturationEditor::mouseDrag (const juce::MouseEvent& e)
+void SaturationView::mouseDrag (const juce::MouseEvent& e)
 {
     if (dragHarmonic >= 0)
         setHarmonicFromMouse (e.position);
 }
 
-void SaturationEditor::mouseUp (const juce::MouseEvent&)
+void SaturationView::mouseUp (const juce::MouseEvent&)
 {
     if (dragHarmonic >= 0)
         ui.proc.checkpoint();
     dragHarmonic = -1;
+}
+
+void SaturationView::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    for (int k = 0; k < 9; ++k)
+        if (column (k).contains (e.position))
+        {
+            sat().setParam (2 + k, sat().params()[(size_t) (2 + k)].defaultValue);
+            ui.proc.checkpoint();
+            repaint();
+            return;
+        }
 }

@@ -74,7 +74,7 @@ AtelierProcessor::AtelierProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-                          .withInput ("Sidechain (unprocessed reference)", juce::AudioChannelSet::stereo(), false)),
+                          .withInput ("Sidechain", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "ATELIER", createLayout())
 {
     auto raw = [this] (const char* id) { return apvts.getRawParameterValue (id); };
@@ -438,7 +438,8 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
 
     // ---- bridge ----
     float* chans[2] = { l, r };
-    bridge.process (chans, 2, n);
+    const float* key[2] = { scBuffer.getReadPointer (0), scBuffer.getReadPointer (1) };
+    bridge.process (chans, 2, n, scL != nullptr ? key : nullptr);   // blocks with Key = Sidechain listen to it
     const int latency = bridge.latencySamples();
 
     // ---- loudness tracking (A vs aligned dry) for gain-matched A/B ----

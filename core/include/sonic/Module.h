@@ -95,6 +95,10 @@ public:
 
     virtual void setHostInfo (const HostInfo&) {}
 
+    // External key (the plugin's sidechain input) for the next process() call, or
+    // nullptr when there is none. Blocks that can be keyed (Compressor) read it.
+    void setSidechain (const float* left, const float* right) noexcept { keyL = left; keyR = right; }
+
     // Processing latency in samples at the current settings.
     virtual int latencySamples() const { return 0; }
 
@@ -118,6 +122,8 @@ protected:
 
     std::vector<ParamSpec> specs;
     std::unique_ptr<std::atomic<float>[]> values;
+    const float* keyL = nullptr;
+    const float* keyR = nullptr;
     std::atomic<unsigned> version { 0 };
 };
 

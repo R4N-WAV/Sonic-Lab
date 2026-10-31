@@ -512,4 +512,38 @@ void ParametricEqModule::process (float* const* io, int numCh, int n)
     }
 }
 
+bool ParametricEqModule::isParamRelevant (int index) const
+{
+    if (index == 1)   // linear quality
+        return (int) getParam (0) == (int) Phase::linear;
+    if (index < kGlobalParams)
+        return true;
+    const int b = (index - kGlobalParams) / kParamsPerBand, f = (index - kGlobalParams) % kParamsPerBand;
+    const auto shape = (Shape) (int) getParam (bandParam (b, fShape));
+    const bool cut = shape == Shape::lowCut || shape == Shape::highCut;
+    switch (f)
+    {
+        case fGain:  return shape == Shape::bell || shape == Shape::lowShelf || shape == Shape::highShelf || shape == Shape::tilt;
+        case fSlope: return cut;
+        case fDyn:   return ! cut && shape != Shape::notch && shape != Shape::bandPass;
+        case fThr: case fRange: case fAtt: case fRel:
+            return getParam (bandParam (b, fDyn)) > 0.5f && ! cut && shape != Shape::notch && shape != Shape::bandPass;
+        default:     return true;
+    }
+}
+
+std::string ParametricEqModule::irrelevantReason (int index) const
+{
+    if (isParamRelevant (index)) return {};
+    if (index == 1) return "Only used in Linear phase mode.";
+    const int f = (index - kGlobalParams) % kParamsPerBand;
+    switch (f)
+    {
+        case fGain:  return "This shape has no gain (cuts, notch and band pass only filter).";
+        case fSlope: return "Slope applies to low-cut and high-cut bands.";
+        case fDyn:   return "Dynamic mode works on bells, shelves and tilt.";
+        default:     return "Turn Dynamic on for this band to use it.";
+    }
+}
+
 } // namespace sonic

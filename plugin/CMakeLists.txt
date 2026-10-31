@@ -34,8 +34,11 @@ target_sources(Atelier PRIVATE
     Source/AnalysisWorker.cpp
     Source/MainPanels.cpp
     Source/Bridge.cpp
-    Source/Inspector.cpp
     Source/BlockEditors.cpp
+    Source/BlockView.cpp
+    Source/Figures.cpp
+    Source/ParamHelp.cpp
+    Source/BlockPresets.cpp
     Source/Measure.cpp
     Source/Blueprint.cpp
     Source/Templates.cpp)
@@ -78,8 +81,13 @@ target_link_libraries(Atelier
         juce::juce_audio_formats
     PUBLIC
         juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# Link-time optimisation for release builds (CI). Local compile checks can turn it off.
+option(ATELIER_LTO "Link-time optimisation" ON)
+if(ATELIER_LTO)
+    target_link_libraries(Atelier PUBLIC juce::juce_recommended_lto_flags)
+endif()
 
 # Headless processor test: links the plugin's shared code (no DAW, no editor).
 if(SONIC_BUILD_TESTS)

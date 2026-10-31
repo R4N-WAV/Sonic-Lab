@@ -1,5 +1,8 @@
 #include "Bridge.h"
 
+#include <functional>
+#include <set>
+
 #include <sonic/ModuleRegistry.h>
 #include <sonic/modules/ParametricEqModule.h>
 
@@ -473,7 +476,8 @@ void BridgePanel::tidyLayout()
     auto& g = ui.proc.graph();
     const auto ids = g.nodeIds();
     const auto edges = g.edges();
-    // depth = longest path from Input (blocks with no path get their own column at the end)
+
+    // column = longest path from Input (blocks with no path get their own column at the end)
     std::map<int, int> depth;
     depth[Graph::kInputId] = 0;
     for (size_t pass = 0; pass < ids.size() + 2; ++pass)
@@ -482,17 +486,73 @@ void BridgePanel::tidyLayout()
                 depth[e.to] = juce::jmax (depth.count (e.to) ? depth[e.to] : 0, depth[e.from] + 1);
     int maxDepth = 0;
     for (auto& [id, d] : depth) maxDepth = juce::jmax (maxDepth, d);
-    std::map<int, std::vector<int>> columns;
-    for (int id : ids)
-        columns[depth.count (id) ? depth[id] : maxDepth + 1].push_back (id);
-    for (auto& [col, members] : columns)
+
+    // the main line: the longest Input -> Output path; everything else is a parallel branch
+    std::map<int, int> best;      // node -> length of the longest path from it to Output
+    std::map<int, int> nextOf;
+    std::function<int (int)> longest = [&] (int v) -> int
     {
-        const float x = 210.0f + (float) (col - 1) * ((float) kCardW + 56.0f);
-        const float total = (float) members.size() * (kCardH + 22.0f) - 22.0f;
-        float y = kMidY - total * 0.5f;
-        for (int id : members)
-            if (auto* n = g.node (id)) { n->x = x; n->y = y; y += kCardH + 22.0f; }
+        if (v == Graph::kOutputId) return 0;
+        if (auto it = best.find (v); it != best.end()) return it->second;
+        best[v] = -1000;   // guards against cycles (there are none)
+        int bestLen = -1000, bestNext = -1;
+        for (auto& e : edges)
+            if (e.from == v)
+            {
+                const int l = longest (e.to);
+                if (l > -1000 && l + 1 > bestLen) { bestLen = l + 1; bestNext = e.to; }
+            }
+        best[v] = bestLen;
+        nextOf[v] = bestNext;
+        return bestLen;
+    };
+    std::set<int> mainLine;
+    if (longest (Graph::kInputId) > 0)
+        for (int v = nextOf[Graph::kInputId]; v >= 2 && mainLine.insert (v).second; v = nextOf.count (v) ? nextOf[v] : -1) {}
+
+    const float step = (float) kCardH + 30.0f;
+    auto colX = [&] (int col) { return 210.0f + (float) (col - 1) * ((float) kCardW + 56.0f); };
+    std::map<int, std::set<int>> usedLanes;      // column -> lanes taken (0 = main line)
+    std::map<int, int> laneOf;
+    for (int id : mainLine)
+    {
+        const int col = depth.count (id) ? depth[id] : maxDepth + 1;
+        usedLanes[col].insert (0);
+        laneOf[id] = 0;
     }
+    // branches: keep a branch on the lane of the block feeding it, else the nearest free lane
+    // (alternating below / above the main line)
+    std::vector<int> rest;
+    for (int id : ids) if (! mainLine.count (id)) rest.push_back (id);
+    std::sort (rest.begin(), rest.end(), [&] (int a, int b)
+    {
+        const int da = depth.count (a) ? depth[a] : maxDepth + 1, db = depth.count (b) ? depth[b] : maxDepth + 1;
+        return da != db ? da < db : a < b;
+    });
+    for (int id : rest)
+    {
+        const int col = depth.count (id) ? depth[id] : maxDepth + 1;
+        int want = 0;
+        for (auto& e : edges)
+            if (e.to == id && laneOf.count (e.from) && laneOf[e.from] != 0) { want = laneOf[e.from]; break; }
+        auto& used = usedLanes[col];
+        int lane = want;
+        if (lane == 0 || used.count (lane))
+            for (int k = 1; k < 50; ++k)
+            {
+                if (! used.count (k)) { lane = k; break; }
+                if (! used.count (-k)) { lane = -k; break; }
+            }
+        used.insert (lane);
+        laneOf[id] = lane;
+    }
+    for (int id : ids)
+        if (auto* n = g.node (id))
+        {
+            const int col = depth.count (id) ? depth[id] : maxDepth + 1;
+            n->x = colX (col);
+            n->y = kMidY - kCardH * 0.5f + (float) laneOf[id] * step;
+        }
     changed (false);
     fitView();
 }
@@ -505,14 +565,13 @@ void BridgePanel::showNodeMenu (int id)
     auto* n = g.node (id);
     if (n == nullptr)
         return;
-    const bool hasEditor = n->type == "tone.eq" || n->type == "character.saturation";
     const bool connected = isConnected (id);
     bool hasIn = false, hasOut = false;
     for (auto& e : g.edges()) { hasIn |= e.to == id; hasOut |= e.from == id; }
 
     juce::PopupMenu m;
     m.addSectionHeader (stageText (g, id) + "  " + theme::q (typeLabel (n->type).toLowerCase()));
-    m.addItem (withKey (juce::PopupMenu::Item (hasEditor ? "Open editor" : "Show all controls").setID (1), "Double-click"));
+    m.addItem (withKey (juce::PopupMenu::Item ("Edit").setID (1), "Click"));
     m.addItem (withKey (juce::PopupMenu::Item (n->enabled.load() ? "Bypass" : "Enable").setID (4), "B"));
     m.addItem (withKey (juce::PopupMenu::Item ("Duplicate").setID (3), "Ctrl D"));
     m.addItem (juce::PopupMenu::Item ("Rename...").setID (2));
@@ -535,7 +594,7 @@ void BridgePanel::showNodeMenu (int id)
         if (node == nullptr) return;
         switch (r)
         {
-            case 1: if (ui.openFullEditor) ui.openFullEditor (id); break;
+            case 1: ui.select (id); break;
             case 2:
             {
                 auto* w = new juce::AlertWindow ("Rename block", "", juce::MessageBoxIconType::NoIcon);
@@ -853,8 +912,8 @@ void BridgePanel::mouseDoubleClick (const juce::MouseEvent& e)
             changed (false);
         }
     }
-    else if (h.kind == Hit::node && h.id >= 2 && ui.openFullEditor)
-        ui.openFullEditor (h.id);
+    else if (h.kind == Hit::node && h.id >= 2)
+        ui.select (h.id);
     else if (h.kind == Hit::none && canvas().contains (e.position))
         fitView();
 }

@@ -8,6 +8,9 @@
 #include "../plugin/Source/Widgets.h"
 #include "../plugin/Source/Templates.h"
 #include "../plugin/Source/PluginProcessor.h"
+#include "../plugin/Source/PluginEditor.h"
+#include "../plugin/Source/BlockPresets.h"
+#include "../plugin/Source/ParamHelp.h"
 
 #include <cstdio>
 
@@ -329,6 +332,198 @@ int main()
         const bool hiddenOpto = ! m.isParamRelevant (autoIdx);
         m.setParam ("model", 2.0f);
         check (hiddenOpto && m.isParamRelevant (autoIdx), "Auto release is hidden for Opto only");
+    }
+
+
+    // ================================================================ v0.4
+    std::printf ("\nv0.4\n");
+
+    // ---- sidechain: on by default, and it keys a compressor ----
+    {
+        AtelierProcessor sp;
+        check (sp.getBusCount (true) == 2 && sp.getBus (true, 1)->isEnabled(), "sidechain input is enabled by default (FL Studio offers it without extra steps)");
+        sp.prepareToPlay (fs, block);
+        auto& g = sp.graph();
+        g.clear();
+        const int c = g.addNode ("dynamics.compressor", 300, 120);
+        auto& m = *g.node (c)->module;
+        m.setParam ("model", 2.0f); m.setParam ("threshold_db", -30.0f); m.setParam ("ratio", 10.0f); m.setParam ("key", 1.0f);
+        g.connect (sonic::Graph::kInputId, c); g.connect (c, sonic::Graph::kOutputId);
+        g.prepare (fs, block);
+        juce::AudioBuffer<float> buf (4, block);
+        juce::MidiBuffer midi;
+        auto level = [&] (float keyAmp)
+        {
+            float out = 0.0f;
+            for (int b = 0; b < 60; ++b)
+            {
+                buf.clear();
+                fillSine (buf, 0, b * block, 0.02f, 300.0);
+                fillSine (buf, 1, b * block, 0.02f, 300.0);
+                fillSine (buf, 2, b * block, keyAmp, 60.0);
+                fillSine (buf, 3, b * block, keyAmp, 60.0);
+                sp.processBlock (buf, midi);
+                out = rms (buf.getReadPointer (0), block);
+            }
+            return out;
+        };
+        const float quietKey = level (0.0f), loudKey = level (0.7f);
+        check (sp.sidechainState() == AtelierProcessor::SidechainState::active, "sidechain signal detected");
+        check (juce::Decibels::gainToDecibels (loudKey / quietKey) < -10.0f,
+               "a loud sidechain ducks the track through Key = Sidechain (" + juce::String (juce::Decibels::gainToDecibels (loudKey / quietKey), 1) + " dB)");
+        sp.releaseResources();
+    }
+
+    // ---- block presets ----
+    {
+        bool idsOk = true, soundOk = true;
+        int count = 0;
+        for (auto& info : sonic::availableModules())
+            for (auto& pr : blockpresets::factory (info.typeId))
+            {
+                ++count;
+                sonic::Graph g;
+                g.clear();
+                const int id = g.addNode (info.typeId, 0, 0);
+                for (auto& [k, v] : pr.params)
+                    if (g.node (id)->module->paramIndex (k) < 0) { idsOk = false; std::printf ("    unknown id %s in %s\n", k.c_str(), pr.name.toRawUTF8()); }
+                blockpresets::apply (pr, *g.node (id));
+                g.connect (sonic::Graph::kInputId, id); g.connect (id, sonic::Graph::kOutputId);
+                g.prepare (fs, block);
+                juce::AudioBuffer<float> b (2, block);
+                float energy = 0.0f;
+                bool finite = true;
+                for (int k = 0; k < 40; ++k)
+                {
+                    fillSine (b, 0, k * block, 0.25f, 440.0);
+                    fillSine (b, 1, k * block, 0.25f, 440.0);
+                    float* ch[2] = { b.getWritePointer (0), b.getWritePointer (1) };
+                    g.process (ch, 2, block);
+                    for (int i = 0; i < block; ++i) finite &= std::isfinite (ch[0][i]);
+                    energy += rms (ch[0], block);
+                }
+                if (! finite || energy < 1e-4f) { soundOk = false; std::printf ("    preset %s: finite %d energy %f\n", pr.name.toRawUTF8(), finite, energy); }
+            }
+        check (count >= 60, "factory block presets: " + juce::String (count));
+        check (idsOk, "every factory preset only names real parameters");
+        check (soundOk, "every factory preset plays clean, audible audio");
+
+        sonic::Graph g;
+        const int id = g.addNode ("dynamics.compressor", 0, 0);
+        auto& n = *g.node (id);
+        n.module->setParam ("ratio", 7.5f);
+        n.mix = 0.4f;
+        juce::String err;
+        const bool saved = blockpresets::save (n, "Smoke test preset", err);
+        auto mine = blockpresets::personal ("dynamics.compressor");
+        auto it = std::find_if (mine.begin(), mine.end(), [] (const blockpresets::Preset& x) { return x.name == "Smoke test preset"; });
+        bool loaded = false;
+        if (it != mine.end())
+        {
+            n.module->setParam ("ratio", 2.0f);
+            n.mix = 1.0f;
+            blockpresets::apply (*it, n);
+            loaded = std::abs (n.module->getParam ("ratio") - 7.5f) < 1e-4f && std::abs (n.mix.load() - 0.4f) < 1e-4f;
+        }
+        check (saved && loaded, "personal block preset: save, load (incl. Mix) " + err);
+        check (it != mine.end() && blockpresets::remove (*it) && blockpresets::personal ("dynamics.compressor").size() + 1 == mine.size(), "personal block preset: delete");
+    }
+
+    // ---- hover help: every control explains itself ----
+    {
+        int missing = 0, total = 0;
+        for (auto& info : sonic::availableModules())
+        {
+            auto m = sonic::createModule (info.typeId);
+            for (int i = 0; i < m->numParams(); ++i)
+            {
+                ++total;
+                if (help::forParam (info.typeId, m->params()[(size_t) i].id).empty())
+                {
+                    ++missing;
+                    std::printf ("    no help: %s/%s\n", info.typeId.c_str(), m->params()[(size_t) i].id.c_str());
+                }
+            }
+        }
+        check (missing == 0, "plain-language help for all " + juce::String (total) + " block controls");
+    }
+
+    // ---- the editor: block in the centre, EQ editing, controls ----
+    {
+        p->prepareToPlay (fs, block);
+        auto& g = p->graph();
+        g.clear();
+        const int a = g.addNode ("character.tape", 200, 132);
+        const int eqId = g.addNode ("tone.eq", 440, 132);
+        const int par = g.addNode ("space.reverb", 440, 132);
+        g.connect (sonic::Graph::kInputId, a); g.connect (a, eqId); g.connect (eqId, sonic::Graph::kOutputId);
+        g.connect (a, par); g.connect (par, sonic::Graph::kOutputId);
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+        auto* e = dynamic_cast<AtelierEditor*> (ed.get());
+        e->selectBlock (a);
+        check (e->centreView().isVisible() && e->centreView().shownId() == a, "selecting a block puts it in the centre view");
+        e->selectBlock (-1);
+        check (! e->centreView().isVisible(), "nothing selected: the spectrum is back");
+
+        e->selectBlock (eqId);
+        auto* eqv = dynamic_cast<EqView*> (e->centreView().body());
+        check (eqv != nullptr, "the EQ opens in the centre view");
+        if (eqv != nullptr)
+        {
+            eqv->addBandAt (200.0, 3.0);
+            eqv->addBandAt (2000.0, -2.0);
+            eqv->addBandAt (8000.0, 1.0);
+            check (eqv->numBands() == 3, "EQ: bands added");
+            eqv->selectAllBands();
+            eqv->deleteSelectedBands();
+            check (eqv->numBands() == 0, "EQ: select all + delete removes every band");
+            sonic::eqmatch::Spectrum flat, bump;
+            flat.binHz = bump.binHz = fs / 4096.0;
+            flat.frames = bump.frames = 1;
+            for (int k = 0; k <= 2048; ++k)
+            {
+                const double f = juce::jmax (20.0, k * flat.binHz);
+                flat.power.push_back (1.0 / f);
+                bump.power.push_back (1.0 / f * (f > 3000.0 && f < 6000.0 ? 4.0 : 1.0));
+            }
+            eqv->applyMatch (flat, bump);
+            const int first = eqv->numBands();
+            eqv->applyMatch (flat, bump);
+            check (first > 0 && eqv->numBands() == first, "EQ match adds bands, and applying again replaces them (" + juce::String (first) + " bands)");
+            auto& eq = static_cast<sonic::ParametricEqModule&> (*g.node (eqId)->module);
+            using EQ = sonic::ParametricEqModule;
+            int b0 = -1;
+            for (int b = 0; b < EQ::kMaxBands; ++b) if (eq.bandOn (b)) { b0 = b; break; }
+            check (b0 >= 0 && ! eq.isParamRelevant (EQ::bandParam (b0, EQ::fThr)), "EQ: dynamic controls are greyed out while Dynamic is off");
+            if (b0 >= 0) eq.setParam (EQ::bandParam (b0, EQ::fDyn), 1.0f);
+            check (b0 >= 0 && eq.isParamRelevant (EQ::bandParam (b0, EQ::fThr)), "EQ: and active once it is on");
+        }
+
+        // fine mouse wheel: one notch moves a control by under 1 % of its travel
+        {
+            AtelierSlider sl;
+            sl.setRange (0.0, 100.0, 0.0);
+            sl.setValue (50.0);
+            juce::MouseWheelDetails w {};
+            w.deltaY = 0.234f;   // one notch on Windows
+            auto ev = juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), juce::Point<float>(), juce::ModifierKeys(), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &sl, &sl,
+                                        juce::Time::getCurrentTime(), juce::Point<float>(), juce::Time::getCurrentTime(), 1, false);
+            sl.mouseWheelMove (ev, w);
+            const double step = sl.getValue() - 50.0;
+            check (step > 0.2 && step < 1.0, "one wheel notch moves a control by " + juce::String (step, 2) + " % of its travel (was ~3.5 %)");
+            sl.setDefault (20.0);
+            sl.mouseDoubleClick (ev);
+            check (std::abs (sl.getValue() - 20.0) < 1e-9, "double-click resets a control to its default");
+        }
+
+        // TIDY keeps the parallel reverb off the main line
+        e->selectBlock (-1);
+        BridgePanel bp (e->uiState());
+        bp.setBounds (0, 0, 1552, 448);
+        bp.tidyLayout();
+        check (std::abs (g.node (a)->y - g.node (eqId)->y) < 1.0f && std::abs (g.node (par)->y - g.node (eqId)->y) > 50.0f,
+               "TIDY: the main line stays in line, the parallel block gets its own lane");
+        ed.reset();
     }
 
     p->releaseResources();

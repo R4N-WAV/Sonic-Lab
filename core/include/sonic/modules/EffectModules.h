@@ -131,6 +131,9 @@ class PitchModule final : public Module
     SONIC_MODULE_BOILERPLATE (PitchModule, "pitch.shift", "Pitch")
     float defaultMix() const override { return 1.0f; }
     double ratio (int channel) const;   // current pitch ratio (1 = unchanged)
+    // The two grains read on average half a grain behind the input; reporting it keeps the
+    // block aligned with parallel paths (otherwise it combs against them).
+    int latencySamples() const override;
 private:
     std::array<FracDelay, 2> line;
     std::array<double, 2> phase { 0.0, 0.0 }, toneZ { 0.0, 0.0 }, fbZ { 0.0, 0.0 };

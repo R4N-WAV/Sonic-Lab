@@ -344,7 +344,7 @@ void Graph::prepare (double sampleRate, int maxBlockSize)
 
 // ------------------------------------------------------------------ audio
 
-void Graph::process (float* const* io, int numChannels, int numSamples)
+void Graph::process (float* const* io, int numChannels, int numSamples, const float* const* key)
 {
     Compiled* c = nullptr;
     do
@@ -366,13 +366,15 @@ void Graph::process (float* const* io, int numChannels, int numSamples)
         float* r = numChannels > 1 ? io[1] + start : c->monoR.data();
         if (numChannels == 1)
             std::copy (l, l + n, c->monoR.begin());
-        processChunk (*c, l, r, n);
+        const float* kl = key != nullptr && key[0] != nullptr ? key[0] + start : nullptr;
+        const float* kr = key != nullptr && key[1] != nullptr ? key[1] + start : kl;
+        processChunk (*c, l, r, n, kl, kr);
     }
 
     inUse.store (nullptr);
 }
 
-void Graph::processChunk (Compiled& c, float* l, float* r, int n)
+void Graph::processChunk (Compiled& c, float* l, float* r, int n, const float* keyL, const float* keyR)
 {
     std::copy (l, l + n, c.inL.begin());
     std::copy (r, r + n, c.inR.begin());
@@ -411,6 +413,7 @@ void Graph::processChunk (Compiled& c, float* l, float* r, int n)
         if (on)
         {
             nd.module->setHostInfo (host);
+            nd.module->setSidechain (keyL, keyR);
             float* chans[2] = { e.outL.data(), e.outR.data() };
             nd.module->process (chans, 2, n);
 

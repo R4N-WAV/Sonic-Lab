@@ -79,15 +79,16 @@ public:
 
     // ---- audio thread ----
     void setHostInfo (const HostInfo& info) { host = info; }
-    // Processes stereo audio in place (numChannels 1 or 2).
-    void process (float* const* io, int numChannels, int numSamples);
+    // Processes stereo audio in place (numChannels 1 or 2). 'key' is the optional
+    // external sidechain (2 channel pointers, same length) passed to every block.
+    void process (float* const* io, int numChannels, int numSamples, const float* const* key = nullptr);
     int latencySamples() const { return latency.load (std::memory_order_relaxed); }
 
 private:
     struct Compiled;
     void commit();
     void retire (Compiled* c);
-    void processChunk (Compiled& c, float* l, float* r, int n);
+    void processChunk (Compiled& c, float* l, float* r, int n, const float* keyL, const float* keyR);
 
     std::map<int, std::shared_ptr<Node>> nodes;
     std::vector<Edge> edgeList;

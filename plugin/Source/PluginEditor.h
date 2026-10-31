@@ -1,8 +1,7 @@
 #pragma once
 
-#include "BlockEditors.h"
+#include "BlockView.h"
 #include "Bridge.h"
-#include "Inspector.h"
 #include "MainPanels.h"
 
 class AtelierEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -19,16 +18,15 @@ public:
 
     // for headless snapshots / tests
     void selectBlock (int id) { ui.select (id); }
-    void openBlock (int id) { openEditor (id); }
-    void closeBlock() { closeEditor(); }
     void openExportDialog() { showExport(); }
-    void pumpAnalysis() { lastVBlank = 0.0; onVBlank(); }
+    void pumpAnalysis() { lastVBlank = 0.0; onVBlank(); if (blockView.isVisible()) blockView.pumpForTests(); }
+    BlockView& centreView() { return blockView; }
+    Ui& uiState() { return ui; }
 
 private:
     void timerCallback() override;
     void onVBlank();
-    void openEditor (int nodeId);
-    void closeEditor();
+    void selectionChanged();
     void showExport();
 
     AtelierProcessor& proc;
@@ -41,14 +39,14 @@ private:
         void paint (juce::Graphics& g) override;
     } content;
 
+    PreviewEngine previews;
     HeaderBar header { ui };
     SpectrumPanel spectrum { ui };
     ReadoutPanel readout { ui };
     BridgePanel bridge { ui };
-    InspectorPanel inspector { ui };
-    std::unique_ptr<BlockEditor> overlay;
+    BlockView blockView { ui, previews };
     std::unique_ptr<juce::Component> exportDialog;
-    juce::TooltipWindow tooltips { this, 700 };
+    juce::TooltipWindow tooltips { this, 450 };
     double lastReadoutPaint = 0.0, lastVBlank = 0.0;
     juce::VBlankAttachment vblank { this, [this] { onVBlank(); } };   // repaint in step with the display
 };

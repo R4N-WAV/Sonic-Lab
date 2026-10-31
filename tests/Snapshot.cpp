@@ -71,16 +71,32 @@ int main (int argc, char** argv)
         juce::PNGImageFormat().writeImageToStream (img, os);
         std::printf ("wrote %s\n", outDir.getChildFile (name).getFullPathName().toRawUTF8());
     };
-    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) e->selectBlock (comp);
-    shot ("main.png");
-    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) e->openBlock (eq);
-    shot ("eq.png");
-    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) { e->closeBlock(); e->openBlock (g.addNode ("character.saturation", 900, -10)); }
-    shot ("saturation.png");
-    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) { e->closeBlock(); e->selectBlock (sonic::Graph::kInputId); }
-    shot ("input.png");
-    if (auto* e = dynamic_cast<AtelierEditor*> (ed.get())) e->openExportDialog();
-    shot ("export.png");
+    auto* e = dynamic_cast<AtelierEditor*> (ed.get());
+    const juce::String only = argc > 2 ? juce::String (argv[2]) : juce::String();
+    auto want = [&] (const char* n) { return only.isEmpty() || only == n; };
+    e->selectBlock (-1);
+    if (want ("main")) shot ("main.png");
+    e->selectBlock (comp);
+    if (want ("comp")) shot ("comp.png");
+    e->selectBlock (eq);
+    if (want ("eq")) shot ("eq.png");
+    for (auto [type, name] : { std::pair<const char*, const char*> { "character.saturation", "saturation" }, { "character.tape", "tape" },
+                               { "space.reverb", "reverb" }, { "mod.phaser", "phaser" }, { "dynamics.transient", "transient" },
+                               { "pitch.shift", "pitch" }, { "utility.stereo", "stereo" }, { "tone.filter", "filter" } })
+    {
+        if (! want (name)) continue;
+        const int id = g.addNode (type, 900, 300);
+        if (juce::String (name) == "pitch") g.node (id)->module->setParam ("semitones", 7.0f);
+        if (juce::String (name) == "filter") { g.node (id)->module->setParam ("lfo_rate_hz", 0.5f); g.node (id)->module->setParam ("lfo_depth_oct", 1.5f); }
+        e->selectBlock (id);
+        shot (juce::String (name) + ".png");
+    }
+    e->selectBlock (dly);
+    if (want ("delay")) shot ("delay.png");
+    e->selectBlock (sonic::Graph::kInputId);
+    if (want ("input")) shot ("input.png");
+    e->selectBlock (-1);
+    if (want ("export")) { e->openExportDialog(); shot ("export.png"); }
     run = false;
     audio.join();
     ed.reset();

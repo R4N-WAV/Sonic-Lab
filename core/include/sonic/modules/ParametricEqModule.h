@@ -46,6 +46,8 @@ public:
     void reset() override;
     void process (float* const* channels, int numChannels, int numSamples) override;
     int latencySamples() const override;
+    bool isParamRelevant (int index) const override;
+    std::string irrelevantReason (int index) const override;
 
     // ---- band helpers (parameter index arithmetic) ----
     static int bandParam (int band, int field) { return kGlobalParams + band * kParamsPerBand + field; }

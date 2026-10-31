@@ -1,6 +1,22 @@
 # TODO
 
-## v0.3 (current)
+## v0.4 (current)
+- [x] The selected block opens in the centre (where the spectrum is), with its picture and every control; nothing selected = spectrum. The bottom-right inspector is gone, the Bridge is full width
+- [x] SIMPLE view dropped: all controls, grouped, always visible; controls a setting ignores are greyed out with the reason
+- [x] Fine mouse wheel (~0.8 % of the travel per notch; Shift finer, Ctrl coarser); double-click resets; right-click or click the number to type; clicking elsewhere cancels typing
+- [x] Hover help on every control in plain language ("More = ... / Less = ...")
+- [x] Sidechain: the input is on by default; Compressor has Key = Internal / Sidechain; Input view shows the sidechain state and three FL Studio steps
+- [x] Measured pictures for every block (sonic/Preview): response, harmonics, transfer curve, static curve + attack/release, drum-hit envelope, echoes, reverb tail with RT60 per band, modulation map, pitch spectrum, stereo image and width per frequency
+- [x] EQ: single click adds a band, drag across empty space selects several, Delete removes, value readout while dragging, dynamic controls greyed out when off, dynamic band without the stem/diamond, branded menus everywhere
+- [x] EQ Match rebuilt: reference from a file or captured live, your sound captured live, the correction drawn before applying, Apply replaces the previous match bands
+- [x] Block presets: 84 built in (all block types) + save / load / delete your own per block type
+- [x] A/B is one button
+- [x] Saturation: every control glides across the block (no clicks when designing harmonics); the preview renders on a background thread (no lag)
+- [x] TIDY keeps parallel branches on their own lanes
+- [x] Parallel phasing: Pitch now reports its latency (it was 25 ms late and combed against the dry path); Tape wow/flutter default to off (they flange against parallel paths)
+- [x] Removed the breadcrumb, footer line and spectrum footnote
+
+## v0.3
 - [x] "Maison" look drawn from the logo: linen paper, ink, camel; italic serif titles, ruler axes, garment-tag blocks, stitched parallel wires, watch-dial knobs, matching menus and dialogs
 - [x] Double-click any value to type it (Alt-click resets)
 - [x] Spectrum at ~60 fps from a short FFT with analyser ballistics; measurements on a slower path
@@ -25,11 +41,11 @@
 - [x] Tests: 37 core DSP + 54 block + 41 plugin checks, pluginval strictness 5
 - [ ] DAW test by R4N (FL Studio 25, 44.1 kHz / 512)
 
-## Known limitations (v0.2)
+## Known limitations
+- Parallel paths are sample-aligned, but blocks with filters (tape, transformer, filters) still shift phase near the top end, like hardware; summing them with a dry path can soften the highs.
 - (v0.3) A tiny spur at half the test frequency (~-110 dBFS) with fast feedback compressors is not yet investigated.
 - Block parameters are not host-automatable yet (only the global ones: trims, A/B, bypass). The bridge and all block settings are saved with the project.
 - In linear-phase mode, dynamic EQ bands act as static bands.
-- EQ Match learns the reference from Atelier's own input (or sidechain), not from a loaded file.
 - Delay, chorus, flanger and tape wow use modulation, so their renders are not sample-identical between runs; the Blueprint says so.
 - DAW routing steps for reference analysis are not yet confirmed in a DAW. An FL Studio guide with screenshots comes later.
 

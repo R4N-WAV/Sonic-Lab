@@ -4,37 +4,37 @@
 void AtelierEditor::Content::paint (juce::Graphics& g)
 {
     g.fillAll (theme::bg);
-    g.setColour (theme::textDim);
-    g.setFont (theme::mono (9.0f));
-    g.setColour (theme::textFaint);
-    g.drawText (juce::String (juce::CharPointer_UTF8 ("ATELIER \xe2\x80\x94 MAISON DE SON \xe2\x80\x94 C/O R4N \xe2\x80\x94 OSLO")), juce::Rectangle<int> (32, kH - 20, 600, 18), juce::Justification::centredLeft);
-    g.drawText ("v" JucePlugin_VersionString, juce::Rectangle<int> (kW - 224, kH - 20, 200, 18), juce::Justification::centredRight);
 }
 
 AtelierEditor::AtelierEditor (AtelierProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
     setLookAndFeel (&lnf);
+    // every pop-up (menus, combo lists, dialogs) uses Atelier's look, even without a parent
+    juce::LookAndFeel::setDefaultLookAndFeel (&lnf);
     addAndMakeVisible (content);
     for (juce::Component* c : { (juce::Component*) &header, (juce::Component*) &spectrum, (juce::Component*) &readout,
-                                (juce::Component*) &bridge, (juce::Component*) &inspector })
+                                (juce::Component*) &bridge })
         content.addAndMakeVisible (c);
+    content.addChildComponent (blockView);
 
+    // layout: the selected block takes the centre (where the spectrum is) - eye level,
+    // not a corner. With nothing selected the spectrum is back.
     header.setBounds (0, 0, kW, 72);
     spectrum.setBounds (24, 88, 1240, 432);
+    blockView.setBounds (24, 88, 1240, 432);
     readout.setBounds (1280, 88, 296, 432);
-    bridge.setBounds (24, 536, 1220, 440);
-    inspector.setBounds (1260, 536, 316, 440);
+    bridge.setBounds (24, 536, 1552, 448);
 
-    ui.onSelectionChanged = [this] { inspector.rebuild(); bridge.repaint(); spectrum.repaint(); };
+    ui.onSelectionChanged = [this] { selectionChanged(); };
     ui.onBridgeChanged = [this]
     {
-        inspector.rebuild();
         bridge.repaint();
-        if (overlay != nullptr && proc.graph().node (overlay->node()) == nullptr)
-            closeEditor();
+        if (ui.selected >= 2 && proc.graph().node (ui.selected) == nullptr)
+            ui.select (-1);
+        else if (blockView.isVisible() && (blockView.shownId() != ui.selected || blockView.isStale()))
+            blockView.showFor (ui.selected);
     };
-    ui.openFullEditor = [this] (int id) { openEditor (id); };
-    ui.backToBridge = [this] { exportDialog.reset(); if (overlay != nullptr) closeEditor(); };
+    ui.closeDialogs = [this] { exportDialog.reset(); };
     ui.menuParent = &content;
     header.onExport = [this] { showExport(); };
 
@@ -52,9 +52,22 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p) : AudioProcessorEditor (&p), 
 
 AtelierEditor::~AtelierEditor()
 {
-    overlay.reset();
     exportDialog.reset();
+    if (&juce::LookAndFeel::getDefaultLookAndFeel() == &lnf)
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
+}
+
+void AtelierEditor::selectionChanged()
+{
+    const bool showBlock = ui.selected >= 0;
+    if (showBlock && blockView.shownId() != ui.selected)
+        blockView.showFor (ui.selected);
+    blockView.setVisible (showBlock);
+    spectrum.setVisible (! showBlock);
+    if (! showBlock)
+        blockView.showFor (-2);   // releases the block's controls
+    bridge.repaint();
 }
 
 void AtelierEditor::paint (juce::Graphics& g)
@@ -81,8 +94,8 @@ void AtelierEditor::onVBlank()
     lastVBlank = juce::Time::getMillisecondCounterHiRes();
     if (ui.frozen || ! worker.getResults (ui.res, ui.res.serial))
         return;
-    if (overlay != nullptr)
-        overlay->analysisUpdated();
+    if (blockView.isVisible())
+        blockView.analysisUpdated();
     else
         spectrum.repaintPlot();
     // numbers change slowly and are read, not watched: ~10 repaints per second is plenty
@@ -106,44 +119,12 @@ bool AtelierEditor::keyPressed (const juce::KeyPress& k)
         if (proc.redo() && ui.onBridgeChanged) ui.onBridgeChanged();
         return true;
     }
-    if (k == juce::KeyPress::escapeKey && overlay != nullptr)
+    if (k == juce::KeyPress::escapeKey)
     {
-        closeEditor();
-        return true;
+        if (exportDialog != nullptr) { exportDialog.reset(); return true; }
+        if (ui.selected >= 0) { ui.select (-1); return true; }
     }
     return false;
-}
-
-void AtelierEditor::openEditor (int nodeId)
-{
-    auto* n = proc.graph().node (nodeId);
-    if (n == nullptr)
-        return;
-    ui.select (nodeId);
-    if (n->type == "tone.eq")
-        overlay = std::make_unique<EqEditor> (ui, nodeId);
-    else if (n->type == "character.saturation")
-        overlay = std::make_unique<SaturationEditor> (ui, nodeId);
-    else
-    {
-        // other blocks: their full controls live in the inspector's ADVANCED view
-        inspector.showAdvanced();
-        return;
-    }
-    ui.openEditorId = nodeId;
-    juce::Component::SafePointer<AtelierEditor> safe (this);
-    overlay->onClose = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->closeEditor(); }); };
-    content.addAndMakeVisible (*overlay);
-    overlay->setBounds (0, 72, kW, kH - 72 - 20);
-    overlay->toFront (true);
-}
-
-void AtelierEditor::closeEditor()
-{
-    overlay.reset();
-    ui.openEditorId = -1;
-    inspector.rebuild();
-    bridge.repaint();
 }
 
 void AtelierEditor::showExport()

@@ -814,6 +814,12 @@ void PitchModule::reset()
     fbZ = { 0.0, 0.0 };
 }
 
+int PitchModule::latencySamples() const
+{
+    const double W = std::max (16.0, getParam (pit::pWindow) * 0.001 * fs);
+    return (int) std::lround (4.0 + 0.5 * W);
+}
+
 double PitchModule::ratio (int c) const
 {
     using namespace pit;

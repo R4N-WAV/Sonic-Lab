@@ -8,7 +8,7 @@ namespace sonic
 namespace
 {
     enum P { pModel, pThr, pRatio, pAtt, pRel, pAutoRel, pKnee, pMakeup, pAutoMakeup,
-             pDet, pScHpf, pLink, pProg, pColor, numP };
+             pDet, pScHpf, pLink, pProg, pColor, pKey, numP };
 
     double coeff (double fs, double ms) { return ms > 0.0 ? std::exp (-1.0 / (ms * 0.001 * fs)) : 0.0; }
 }
@@ -44,6 +44,9 @@ CompressorModule::CompressorModule()
             "How strongly timing adapts to the material (Opto memory, auto-release blend).", false, "Timing"),
         ParamSpec::num ("color", "Colour", "", 0, 1, 0.3f, 0,
             "Nonlinearity of the gain element (model-specific harmonics that grow with gain reduction).", false, "Curve"),
+        ParamSpec::choice ("key", "Key", { "Internal", "Sidechain" }, 0,
+            "What the detector listens to. Internal = this block's own input. Sidechain = Atelier's sidechain input "
+            "(e.g. a kick ducking a bass). Falls back to Internal when nothing is routed to the sidechain.", false, "Detector"),
     };
     finaliseParams();
 }
@@ -53,7 +56,7 @@ std::string CompressorModule::topology() const
     static const char* names[] = { "Opto", "FET", "VCA", "Vari-Mu", "Diode bridge" };
     std::string s = "Model: ";
     s += names[(int) getParam (pModel)];
-    s += ". Detector: sidechain 2nd-order HPF -> peak or 10 ms RMS -> stereo link (max-linked blend). "
+    s += ". Detector input: the block's input, or the plugin's external sidechain when Key = Sidechain. Detector: 2nd-order HPF -> peak or 10 ms RMS -> stereo link (max-linked blend). "
          "Gain computer in dB with quadratic soft knee. Feed-forward models (VCA, Diode) use slope (1/R - 1) on the input level; "
          "feedback models (Opto, FET, Vari-Mu) detect the previous output sample and use slope (1 - R), which gives the same "
          "steady-state ratio R. Ballistics are one-pole in the dB domain (attack when reduction increases, release otherwise). "
@@ -148,6 +151,8 @@ void CompressorModule::process (float* const* io, int numCh, int n)
     const double prog = getParam (pProg);
     const double color = getParam (pColor);
     const double hpfHz = getParam (pScHpf);
+    const bool external = getParam (pKey) > 0.5f && keyL != nullptr;
+    const float* key[2] = { keyL, keyR != nullptr ? keyR : keyL };
 
     // makeup = manual + (auto ? half the static reduction at 0 dBFS : 0); staticCurveDb includes both
     double makeupDb = getParam (pMakeup);
@@ -170,7 +175,7 @@ void CompressorModule::process (float* const* io, int numCh, int n)
         for (int c = 0; c < numCh; ++c)
         {
             Chan& st = ch[(size_t) c];
-            const double det = st.hpf.process (feedback ? st.prevOut : (double) io[c][i]);
+            const double det = st.hpf.process (external ? (double) key[c][i] : (feedback ? st.prevOut : (double) io[c][i]));
             double a = std::abs (det);
             if (rms)
             {

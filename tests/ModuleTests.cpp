@@ -1,6 +1,8 @@
 // Atelier: graph engine + block tests. Every check measures real output.
 
 #include "sonic/Analysis.h"
+#include "sonic/EqMatch.h"
+#include "sonic/Preview.h"
 #include "sonic/DspUtils.h"
 #include "sonic/Graph.h"
 #include "sonic/ModuleRegistry.h"
@@ -603,6 +605,154 @@ void testCharacterAndEffects()
 }
 } // namespace
 
+
+void testV04()
+{
+    std::printf ("\nv0.4: smooth saturation, pitch latency, sidechain key, figures, EQ match\n");
+
+    // ---- Saturation: a big recipe change mid-stream must glide, not click ----
+    {
+        auto clickRatio = [] (bool change)
+        {
+            SaturationModule m;
+            m.setParam ("drive_db", 0.0f);
+            m.setParam ("oversampling", 0.0f);
+            for (int h = 2; h <= 10; ++h) m.setParam ("h" + std::to_string (h) + "_dbc", -90.0f);
+            m.prepare (kFs, kBlock, 2);
+            const int n = kBlock * 40;
+            Stereo s = sine (60.0, -3.0, n);
+            for (int i = 0; i < n; i += kBlock)
+            {
+                if (change && i == kBlock * 20) m.setParam ("h3_dbc", 0.0f);   // a full-size third harmonic, instantly
+                float* ch[2] = { s.l.data() + i, s.r.data() + i };
+                m.process (ch, 2, kBlock);
+            }
+            // largest sample-to-sample step (a click is a jump) around the change vs. after it settled
+            auto jump = [&] (int a, int b)
+            {
+                double mx = 0.0;
+                for (int i = a + 1; i < b; ++i)
+                    mx = std::max (mx, (double) std::abs (s.l[(size_t) i] - s.l[(size_t) i - 1]));
+                return mx;
+            };
+            return jump (kBlock * 19, kBlock * 22) / std::max (1e-9, jump (kBlock * 30, kBlock * 40));
+        };
+        const double r = clickRatio (true);
+        check (r < 2.5, fmt ("Saturation: switching H3 from off to 0 dBc mid-note glides (largest step %.2f x the normal one; an unsmoothed switch measures about 20 x)", r));
+    }
+
+    // ---- Pitch: reported latency = where the signal really is ----
+    {
+        PitchModule m;
+        m.prepare (kFs, kBlock, 2);
+        Stereo s (8192);
+        s.l[100] = s.r[100] = 0.5f;
+        run (m, s);
+        int pk = 0;
+        for (int i = 0; i < s.size(); ++i) if (std::abs (s.l[(size_t) i]) > std::abs (s.l[(size_t) pk])) pk = i;
+        check (std::abs (pk - 100 - m.latencySamples()) <= 1, fmt ("Pitch reports its latency (%.0f smp, peak at +%.0f): parallel paths line up", m.latencySamples(), pk - 100));
+        Graph g;
+        g.clear();
+        const int id = g.addNode ("pitch.shift");
+        g.connect (Graph::kInputId, id); g.connect (id, Graph::kOutputId); g.connect (Graph::kInputId, Graph::kOutputId);
+        g.prepare (kFs, kBlock);
+        Stereo t = sine (5000.0, -12.0, 32768);
+        const double in = toneDb (t.l, 5000.0);
+        run (g, t);
+        check (std::abs (toneDb (t.l, 5000.0) - in - 6.02) < 0.3, fmt ("Pitch (0 st) in parallel with dry: 5 kHz sums to +%.2f dB (no comb)", toneDb (t.l, 5000.0) - in));
+    }
+
+    // ---- Compressor: external sidechain key ----
+    {
+        auto grWith = [] (float keyParam, bool keyLoud)
+        {
+            CompressorModule m;
+            m.setParam ("model", 2.0f);
+            m.setParam ("threshold_db", -30.0f);
+            m.setParam ("ratio", 10.0f);
+            m.setParam ("key", keyParam);
+            m.prepare (kFs, kBlock, 2);
+            Stereo main = sine (200.0, -40.0, kBlock * 80);        // quiet: below threshold by itself
+            Stereo key = sine (60.0, keyLoud ? -6.0 : -80.0, kBlock * 80);
+            float mn = 0.0f;
+            for (int i = 0; i < main.size(); i += kBlock)
+            {
+                m.setSidechain (key.l.data() + i, key.r.data() + i);
+                float* ch[2] = { main.l.data() + i, main.r.data() + i };
+                m.process (ch, 2, kBlock);
+                mn = std::min (mn, m.meter (0));
+            }
+            return mn;
+        };
+        check (grWith (1.0f, true) < -10.0f, fmt ("Key = Sidechain: a loud key ducks a quiet signal (%.1f dB)", grWith (1.0f, true)));
+        check (grWith (1.0f, false) > -0.5f, fmt ("Key = Sidechain: a silent key leaves it alone (%.2f dB)", grWith (1.0f, false)));
+        check (grWith (0.0f, true) > -0.5f, fmt ("Key = Internal ignores the sidechain (%.2f dB)", grWith (0.0f, true)));
+    }
+
+    // ---- figures: every block renders a picture that matches its settings ----
+    {
+        bool all = true;
+        for (auto& info : availableModules())
+        {
+            auto mod = createModule (info.typeId);
+            preview::Settings st;
+            st.type = info.typeId;
+            for (int i = 0; i < mod->numParams(); ++i) st.params.push_back (mod->getParam (i));
+            st.mix = mod->defaultMix();
+            const unsigned k = preview::kindsFor (info.typeId);
+            const auto r = preview::render (st, k);
+            if (r.kinds != k) { all = false; std::printf ("    %s: kinds %x of %x\n", info.typeId.c_str(), r.kinds, k); }
+        }
+        check (all, "every block type renders its figures");
+
+        auto comp = createModule ("dynamics.compressor");
+        preview::Settings st;
+        st.type = "dynamics.compressor";
+        for (int i = 0; i < comp->numParams(); ++i) st.params.push_back (comp->getParam (i));
+        st.params[(size_t) comp->paramIndex ("knee_db")] = 0.0f;
+        const auto r = preview::render (st, preview::dynamics);
+        check (std::abs (r.staticOut.back() - (-18.0f + 18.0f / 4.0f)) < 0.3f, fmt ("compressor figure: 0 dBFS in -> %.2f dB out (thr -18, 4:1 = -13.5)", r.staticOut.back()));
+        double grMin = 0.0;
+        for (auto v : r.stepGrDb) grMin = std::min (grMin, (double) v);
+        check (grMin < -6.0, fmt ("compressor figure: the level step shows %.1f dB of reduction", grMin));
+
+        auto filt = createModule ("tone.filter");
+        preview::Settings fsx;
+        fsx.type = "tone.filter";
+        for (int i = 0; i < filt->numParams(); ++i) fsx.params.push_back (filt->getParam (i));
+        fsx.params[(size_t) filt->paramIndex ("cutoff_hz")] = 1000.0f;
+        fsx.params[(size_t) filt->paramIndex ("resonance")] = 0.0f;
+        const auto fr = preview::render (fsx, preview::response);
+        size_t k1k = 0, k4k = 0;
+        for (size_t i = 0; i < fr.respHz.size(); ++i)
+        {
+            if (std::abs (std::log (fr.respHz[i] / 1000.0)) < std::abs (std::log (fr.respHz[k1k] / 1000.0))) k1k = i;
+            if (std::abs (std::log (fr.respHz[i] / 4000.0)) < std::abs (std::log (fr.respHz[k4k] / 4000.0))) k4k = i;
+        }
+        check (fr.respDb[k4k] < fr.respDb[k1k] - 15.0f, fmt ("filter figure: low-pass at 1 kHz is %.1f dB down at 4 kHz", fr.respDb[k1k] - fr.respDb[k4k]));
+    }
+
+    // ---- EQ Match: finds a +6 dB bump at 1 kHz ----
+    {
+        eqmatch::Spectrum flat, bump;
+        flat.binHz = bump.binHz = kFs / 4096.0;
+        flat.frames = bump.frames = 1;
+        for (int k = 0; k <= 2048; ++k)
+        {
+            const double f = k * flat.binHz;
+            const double p = 1.0 / std::max (20.0, f);       // pink-ish
+            flat.power.push_back (p);
+            const auto c = BiquadCoeffs::peaking (kFs, 1000.0, 1.0, 6.0);
+            bump.power.push_back (p * std::pow (c.magnitudeAt (kFs, std::max (1.0, f)), 2.0));
+        }
+        const auto fit = eqmatch::fit (flat, bump, 1.0, 6, kFs);
+        check (! fit.bands.empty() && std::abs (std::log2 (fit.bands[0].freq / 1000.0)) < 0.35 && std::abs (fit.bands[0].gainDb - 5.0) < 2.5,
+               fmt ("EQ match: first band %.0f Hz, %+.1f dB (target 1 kHz, about +6 minus the level offset)",
+                    fit.bands.empty() ? 0.0 : fit.bands[0].freq, fit.bands.empty() ? 0.0 : fit.bands[0].gainDb));
+        check (fit.largestRemainingDb < 1.5, fmt ("EQ match: largest remaining difference %.2f dB", fit.largestRemainingDb));
+    }
+}
+
 int main()
 {
     testGraph();
@@ -610,6 +760,7 @@ int main()
     testCompressor();
     testEq();
     testCharacterAndEffects();
+    testV04();
     std::printf ("\n%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

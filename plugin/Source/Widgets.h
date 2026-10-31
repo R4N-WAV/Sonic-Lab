@@ -2,6 +2,7 @@
 
 #include "PluginProcessor.h"
 #include "Theme.h"
+#include "ParamHelp.h"
 
 #include <sonic/Module.h>
 #include <sonic/ModuleRegistry.h>
@@ -76,7 +77,8 @@ inline double parseTypedValue (juce::String text, const juce::String& unit, doub
     return text.substring (start).getDoubleValue() * mult;
 }
 
-// Small text field that appears over a value, commits on Enter / focus loss, cancels on Esc.
+// Small text field that appears over a value. Enter applies; Esc, or a click anywhere
+// else, cancels.
 class InlineValueEditor : public juce::TextEditor
 {
 public:
@@ -91,27 +93,42 @@ public:
         e->toFront (true);
         e->grabKeyboardFocus();
     }
+    ~InlineValueEditor() override { juce::Desktop::getInstance().removeGlobalMouseListener (&outside); }
 
 private:
     explicit InlineValueEditor (std::function<void (const juce::String&)> c) : commitFn (std::move (c))
     {
         setJustification (juce::Justification::centred);
         setFont (theme::mono (11.5f));
-        setColour (juce::TextEditor::backgroundColourId, theme::bg);
-        setColour (juce::TextEditor::textColourId, theme::text);
-        setColour (juce::TextEditor::outlineColourId, theme::accent);
-        setColour (juce::TextEditor::focusedOutlineColourId, theme::accent);
-        setColour (juce::TextEditor::highlightColourId, theme::accent.withAlpha (0.35f));
-        setColour (juce::CaretComponent::caretColourId, theme::accent);
+        setColour (juce::TextEditor::backgroundColourId, theme::card);
+        setColour (juce::TextEditor::textColourId, theme::ink);
+        setColour (juce::TextEditor::outlineColourId, theme::ink);
+        setColour (juce::TextEditor::focusedOutlineColourId, theme::ink);
+        setColour (juce::TextEditor::highlightColourId, theme::logo.withAlpha (0.45f));
+        setColour (juce::CaretComponent::caretColourId, theme::ink);
         setSelectAllWhenFocused (true);
         onReturnKey = [this] { finish (true); };
         onEscapeKey = [this] { finish (false); };
-        onFocusLost = [this] { finish (true); };
+        onFocusLost = [this] { finish (false); };
+        juce::Desktop::getInstance().addGlobalMouseListener (&outside);
     }
+    // a click anywhere outside the field cancels typing
+    struct Outside : public juce::MouseListener
+    {
+        InlineValueEditor& owner;
+        explicit Outside (InlineValueEditor& o) : owner (o) {}
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            auto* c = e.eventComponent;
+            if (c != &owner && ! owner.isParentOf (c))
+                owner.finish (false);
+        }
+    } outside { *this };
     void finish (bool apply)
     {
         if (done) return;
         done = true;
+        juce::Desktop::getInstance().removeGlobalMouseListener (&outside);
         if (apply && commitFn) commitFn (getText());
         juce::Component::SafePointer<juce::Component> self (this);
         juce::MessageManager::callAsync ([self] { delete self.getComponent(); });
@@ -120,18 +137,58 @@ private:
     bool done = false;
 };
 
-// Slider used everywhere in Atelier: double-click types an exact value, Alt-click resets
-// to the default, drag/scroll as usual.
-class AtelierSlider : public juce::Slider
+// Slider used everywhere in Atelier:
+//   drag / fine mouse-wheel (Shift = finer, Ctrl = coarser) to move,
+//   double-click to reset to the default,
+//   right-click (or click the number next to it) to type an exact value.
+class AtelierSlider : public juce::Slider, private juce::Timer
 {
 public:
+    AtelierSlider() { setSliderSnapsToMousePosition (false); setPopupMenuEnabled (false); }
+
     // Where the text field should appear, in this slider's coordinates (default: the slider itself).
     std::function<juce::Rectangle<int>()> valueArea;
-    std::function<void()> onTypedValue;   // e.g. push an undo checkpoint
+    std::function<void()> onTypedValue;   // e.g. push an undo checkpoint (default: onDragEnd)
 
-    void setDefault (double v) { setDoubleClickReturnValue (true, v, juce::ModifierKeys::altModifier); }
+    void setDefault (double v) { defaultValue = v; hasDefault = true; setDoubleClickReturnValue (true, v, juce::ModifierKeys::altModifier); }
+    double getDefault() const { return defaultValue; }
 
-    void mouseDoubleClick (const juce::MouseEvent&) override { beginTextEntry(); }
+    void resetToDefault()
+    {
+        if (! hasDefault || ! isEnabled()) return;
+        setValue (defaultValue, juce::sendNotificationSync);
+        notifyEdit();
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent&) override { resetToDefault(); }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { beginTextEntry(); return; }
+        juce::Slider::mouseDown (e);
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        if (! isEnabled() || getMaximum() <= getMinimum())
+        {
+            juce::Component::mouseWheelMove (e, w);
+            return;
+        }
+        float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? -w.deltaX : w.deltaY;
+        if (w.isReversed) d = -d;
+        if (d == 0.0f) return;
+        // ~0.8 % of the travel per wheel notch (JUCE's default is ~3.5 %): fine enough to tune by ear
+        double step = d * 0.034;
+        if (e.mods.isShiftDown()) step *= 0.25;
+        else if (e.mods.isCommandDown()) step *= 4.0;
+        const double old = getValue();
+        double v = proportionOfLengthToValue (juce::jlimit (0.0, 1.0, valueToProportionOfLength (old) + step));
+        if (getInterval() > 0.0 && std::abs (snapValue (v, juce::Slider::notDragging) - old) < getInterval() * 0.5)
+            v = old + (step > 0 ? getInterval() : -getInterval());
+        setValue (juce::jlimit (getMinimum(), getMaximum(), v), juce::sendNotificationSync);
+        startTimer (450);   // one undo step once the wheel rests
+    }
 
     void beginTextEntry()
     {
@@ -144,10 +201,19 @@ public:
             if (self == nullptr) return;
             const double v = juce::jlimit (self->getMinimum(), self->getMaximum(), self->getValueFromText (t));
             self->setValue (v, juce::sendNotificationSync);
-            if (self->onTypedValue) self->onTypedValue();
-            else if (self->onDragEnd) self->onDragEnd();
+            self->notifyEdit();
         });
     }
+
+private:
+    void notifyEdit()
+    {
+        if (onTypedValue) onTypedValue();
+        else if (onDragEnd) onDragEnd();
+    }
+    void timerCallback() override { stopTimer(); notifyEdit(); }
+    double defaultValue = 0.0;
+    bool hasDefault = false;
 };
 
 // ------------------------------------------------------------------ module parameter controls
@@ -165,7 +231,7 @@ public:
         setNormalisableRange (rangeFor (s));
         setValue (mod.getParam (idx), juce::dontSendNotification);
         setDefault (s.defaultValue);
-        setTooltip (juce::String (s.name) + ": " + juce::String (s.description) + "\nDouble-click to type a value, Alt-click to reset.");
+        setTooltip (help::tooltip (mod, idx));
         setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
         onValueChange = [this] { mod.setParam (idx, (float) getValue()); };
         onDragEnd = [this] { proc.checkpoint(); };
@@ -180,6 +246,8 @@ public:
     juce::String getTextFromValue (double v) override { return formatParam (mod.params()[(size_t) idx], (float) v); }
     double getValueFromText (const juce::String& t) override { return parseTypedValue (t, mod.params()[(size_t) idx].unit, getValue()); }
     const sonic::ParamSpec& spec() const { return mod.params()[(size_t) idx]; }
+    sonic::Module& module() { return mod; }
+    int index() const { return idx; }
 
 private:
     AtelierProcessor& proc;
@@ -187,60 +255,52 @@ private:
     int idx;
 };
 
-// Segmented buttons (or a combo box for long lists) bound to a choice parameter.
+// Segmented buttons bound to a choice parameter; switches to a drop-down list when the
+// options do not fit side by side.
 class ModuleChoice : public juce::Component
 {
 public:
     ModuleChoice (AtelierProcessor& p, sonic::Module& m, int index) : proc (p), mod (m), idx (index)
     {
         const auto& s = mod.params()[(size_t) idx];
-        useCombo = s.choices.size() > 5;
-        if (useCombo)
+        for (size_t i = 0; i < s.choices.size(); ++i)
+            combo.addItem (juce::String (s.choices[i]), (int) i + 1);
+        combo.onChange = [this] { mod.setParam (idx, (float) (combo.getSelectedItemIndex())); proc.checkpoint(); };
+        addChildComponent (combo);
+        for (size_t i = 0; i < s.choices.size(); ++i)
         {
-            for (size_t i = 0; i < s.choices.size(); ++i)
-                combo.addItem (juce::String (s.choices[i]), (int) i + 1);
-            combo.onChange = [this] { mod.setParam (idx, (float) (combo.getSelectedItemIndex())); proc.checkpoint(); };
-            addAndMakeVisible (combo);
+            auto* b = buttons.add (new juce::TextButton (juce::String (s.choices[i]).toUpperCase()));
+            b->setClickingTogglesState (false);
+            b->onClick = [this, i] { mod.setParam (idx, (float) i); proc.checkpoint(); sync(); };
+            addChildComponent (b);
         }
-        else
-        {
-            for (size_t i = 0; i < s.choices.size(); ++i)
-            {
-                auto* b = buttons.add (new juce::TextButton (juce::String (s.choices[i]).toUpperCase()));
-                b->setClickingTogglesState (false);
-                b->onClick = [this, i] { mod.setParam (idx, (float) i); proc.checkpoint(); sync(); };
-                addAndMakeVisible (b);
-            }
-        }
-        setTooltip (juce::String (s.name) + ": " + juce::String (s.description));
+        setTooltip (help::tooltip (mod, idx));
         sync();
     }
 
     void sync()
     {
         const int v = (int) mod.getParam (idx);
-        if (useCombo)
-        {
-            if (combo.getSelectedItemIndex() != v)
-                combo.setSelectedItemIndex (v, juce::dontSendNotification);
-        }
-        else
-            for (int i = 0; i < buttons.size(); ++i)
-                buttons[i]->setToggleState (i == v, juce::dontSendNotification);
+        if (combo.getSelectedItemIndex() != v)
+            combo.setSelectedItemIndex (v, juce::dontSendNotification);
+        for (int i = 0; i < buttons.size(); ++i)
+            buttons[i]->setToggleState (i == v, juce::dontSendNotification);
     }
 
     void resized() override
     {
-        if (useCombo)
-        {
-            combo.setBounds (getLocalBounds());
-            return;
-        }
         auto r = getLocalBounds();
         const int n = juce::jmax (1, buttons.size());
         const int w = (r.getWidth() - (n - 1) * 4) / n;
+        int widest = 0;
+        for (auto* b : buttons)
+            widest = juce::jmax (widest, juce::GlyphArrangement::getStringWidthInt (theme::mono (10.0f), b->getButtonText()) + 12);
+        const bool useCombo = n > 5 || widest > w;
+        combo.setVisible (useCombo);
+        combo.setBounds (r);
         for (auto* b : buttons)
         {
+            b->setVisible (! useCombo);
             b->setBounds (r.removeFromLeft (w));
             r.removeFromLeft (4);
         }
@@ -253,13 +313,12 @@ private:
     AtelierProcessor& proc;
     sonic::Module& mod;
     int idx;
-    bool useCombo = false;
     juce::ComboBox combo;
     juce::OwnedArray<juce::TextButton> buttons;
 };
 
-// Knob with name and value underneath (SIMPLE view).
-class ModuleKnob : public juce::Component
+// Knob with name and value underneath.
+class ModuleKnob : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     ModuleKnob (AtelierProcessor& p, sonic::Module& m, int index, bool beige = false)
@@ -268,10 +327,22 @@ public:
         slider.getProperties().set ("beige", beige);
         slider.onValueChange = [this, &m, index] { m.setParam (index, (float) slider.getValue()); repaint(); };
         slider.valueArea = [this] { return getLocalBounds().removeFromBottom (18).reduced (6, 0) - slider.getPosition(); };
+        setTooltip (slider.getTooltip());
         addAndMakeVisible (slider);
     }
-    void mouseDoubleClick (const juce::MouseEvent&) override { slider.beginTextEntry(); }
-    void sync() { slider.sync(); repaint(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() || getLocalBounds().removeFromBottom (18).contains (e.getPosition()))
+            slider.beginTextEntry();
+    }
+    void mouseDoubleClick (const juce::MouseEvent&) override { slider.resetToDefault(); }
+    void sync()
+    {
+        slider.sync();
+        const bool rel = slider.module().isParamRelevant (slider.index());
+        if (rel != isEnabled()) { setEnabled (rel); setAlpha (rel ? 1.0f : 0.38f); }
+        repaint();
+    }
     void resized() override
     {
         auto r = getLocalBounds();
@@ -291,8 +362,8 @@ public:
     ModuleSlider slider;
 };
 
-// A row in the ADVANCED list: name | control | value.
-class ModuleParamRow : public juce::Component
+// A row: name | control | value. Greyed out when the block ignores it with the current settings.
+class ModuleParamRow : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     ModuleParamRow (AtelierProcessor& p, sonic::Module& m, int index) : mod (m), idx (index)
@@ -308,39 +379,73 @@ public:
         }
         if (choice) addAndMakeVisible (*choice);
         if (slider) addAndMakeVisible (*slider);
+        setTooltip (help::tooltip (mod, idx));
+        relevant = mod.isParamRelevant (idx);
+        applyRelevance();
     }
     void sync()
     {
         if (choice) choice->sync();
         if (slider) slider->sync();
+        const bool rel = mod.isParamRelevant (idx);
+        if (rel != relevant)
+        {
+            relevant = rel;
+            applyRelevance();
+        }
         repaint();
     }
-    void mouseDoubleClick (const juce::MouseEvent&) override { if (slider) slider->beginTextEntry(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (slider && (e.mods.isPopupMenu() || getLocalBounds().removeFromRight (valueW).contains (e.getPosition())))
+            slider->beginTextEntry();
+    }
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (slider && ! getLocalBounds().removeFromRight (valueW).contains (e.getPosition()))
+            slider->resetToDefault();
+    }
     void resized() override
     {
         auto r = getLocalBounds();
         r.removeFromLeft (labelW);
         if (choice) choice->setBounds (r.reduced (0, 3));
-        if (slider) slider->setBounds (r.withTrimmedRight (valueW));
+        if (slider) slider->setBounds (r.withTrimmedRight (valueW + 4));
     }
     void paint (juce::Graphics& g) override
     {
         const auto& s = mod.params()[(size_t) idx];
         g.setColour (theme::textDim);
         g.setFont (theme::sans (12.5f));
-        g.drawText (juce::String (s.name), getLocalBounds().withWidth (labelW - 6), juce::Justification::centredLeft, true);
+        juce::String name (s.name);
+        if (name.startsWith ("Band ") && name.substring (5).containsChar (' '))   // "Band 3 freq" -> "Freq" (the band is shown above)
+            name = name.substring (5).fromFirstOccurrenceOf (" ", false, false);
+        name = name.substring (0, 1).toUpperCase() + name.substring (1);
+        g.drawText (name, getLocalBounds().withWidth (labelW - 6), juce::Justification::centredLeft, true);
         if (slider)
         {
+            auto v = getLocalBounds().removeFromRight (valueW);
             g.setColour (theme::text);
             g.setFont (theme::mono (10.5f));
-            g.drawText (formatParam (s, mod.getParam (idx)), getLocalBounds().removeFromRight (valueW), juce::Justification::centredRight);
+            g.drawText (formatParam (s, mod.getParam (idx)), v, juce::Justification::centredRight);
         }
     }
     int labelW = 112, valueW = 70;
+    int index() const { return idx; }
 
 private:
+    void applyRelevance()
+    {
+        setEnabled (relevant);
+        setAlpha (relevant ? 1.0f : 0.38f);
+        const auto tip = help::tooltip (mod, idx);
+        setTooltip (tip);
+        if (slider) slider->setTooltip (tip);
+        if (choice) choice->setTooltip (tip);
+    }
     sonic::Module& mod;
     int idx;
+    bool relevant = true;
     std::unique_ptr<ModuleSlider> slider;
     std::unique_ptr<ModuleChoice> choice;
 };
@@ -351,10 +456,10 @@ using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
 using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
-class ApvtsRow : public juce::Component
+class ApvtsRow : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    ApvtsRow (juce::AudioProcessorValueTreeState& st, const juce::String& id, const juce::String& caption_)
+    ApvtsRow (juce::AudioProcessorValueTreeState& st, const juce::String& id, const juce::String& caption_, const juce::String& tip = {})
         : caption (caption_)
     {
         param = st.getParameter (id);
@@ -374,14 +479,23 @@ public:
             slider.valueArea = [this] { return getLocalBounds().removeFromRight (74) - slider.getPosition(); };
             slider.onValueChange = [this] { repaint(); };
         }
+        if (tip.isNotEmpty()) { setTooltip (tip); slider.setTooltip (tip); combo.setTooltip (tip); }
     }
-    void mouseDoubleClick (const juce::MouseEvent&) override { if (! combo.isVisible()) slider.beginTextEntry(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (! combo.isVisible() && (e.mods.isPopupMenu() || getLocalBounds().removeFromRight (74).contains (e.getPosition())))
+            slider.beginTextEntry();
+    }
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (! combo.isVisible() && ! getLocalBounds().removeFromRight (74).contains (e.getPosition())) slider.resetToDefault();
+    }
     void resized() override
     {
         auto r = getLocalBounds();
         r.removeFromLeft (100);
         if (combo.isVisible()) combo.setBounds (r.reduced (0, 3));
-        else slider.setBounds (r.withTrimmedRight (74));
+        else slider.setBounds (r.withTrimmedRight (78));
     }
     void paint (juce::Graphics& g) override
     {

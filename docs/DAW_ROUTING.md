@@ -1,4 +1,13 @@
-# Atelier – DAW routing for reference-plugin analysis
+# Atelier – sidechain routing
+
+Atelier has a stereo sidechain input (on by default). It is used for two things:
+
+1. **Keying a Compressor** from another track (e.g. a kick ducking a bass): set the Compressor's **Key** to **Sidechain**.
+2. **Reference-plugin analysis** (below).
+
+**FL Studio:** select the source track in the mixer, right-click the arrow under Atelier's track and choose *Sidechain to this track*. Then in Atelier's plugin window open the gear icon > *Processing*, turn the sidechain input on and pick that track. Atelier's Input view shows RECEIVING SIGNAL when it works.
+
+# Reference-plugin analysis
 
 To compare a reference plugin's **input** with its **output**, Atelier needs both signals:
 

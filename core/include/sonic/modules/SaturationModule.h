@@ -70,6 +70,11 @@ private:
         FracDelay dLo, dHi, dG; // align the clean paths with the oversampler latency
     };
     std::array<Chan, 2> ch;
+    // Parameter smoothing: every control glides from the previous block's value to the
+    // new one across the block, so moving controls (or the harmonic designer) never clicks.
+    Coeffs prevK;
+    double prevDrive = 1.0, prevOut = 1.0, prevBias = 0.0, prevLd = 0.6;
+    bool havePrev = false;
     double fs = 48000.0;
     int maxBlock = 512, factor = 4;
     std::vector<float> lowBuf, highBuf, bandBuf;

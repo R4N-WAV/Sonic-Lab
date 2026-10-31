@@ -18,10 +18,8 @@ HeaderBar::HeaderBar (Ui& u) : ui (u)
     study.onTextChange = [this] { ui.proc.setProjectName (study.getText().trim().isEmpty() ? "Untitled study" : study.getText().trim()); };
     addAndMakeVisible (study);
 
-    aButton.setTooltip ("A: hear the processed signal (the bridge).");
-    bButton.setTooltip ("B: hear the unprocessed signal, time-aligned with A.");
-    aButton.onClick = [this] { bypass->setValueNotifyingHost (0.0f); };
-    bButton.onClick = [this] { bypass->setValueNotifyingHost (1.0f); };
+    abButton.setTooltip ("Click to switch between A (the processed sound) and B (the dry signal, time-aligned).");
+    abButton.onClick = [this] { bypass->setValueNotifyingHost (bypass->getValue() > 0.5f ? 0.0f : 1.0f); };
     matchButton.setClickingTogglesState (true);
     matchButton.setTooltip ("Gain match: B is played at the same loudness as A, so you compare tone, not volume.");
     matchAtt = std::make_unique<ButtonAttachment> (st, "ab.gain_match", matchButton);
@@ -33,18 +31,16 @@ HeaderBar::HeaderBar (Ui& u) : ui (u)
     exportButton.setTooltip ("Export a complete engineering blueprint of this sound (document, JSON, graphs, measurements, audio).");
     exportButton.onClick = [this] { if (onExport) onExport(); };
 
-    navButton.setTooltip ("Back to the Bridge (Esc).");
-    navButton.onClick = [this] { if (ui.backToBridge) ui.backToBridge(); };
     templatesButton.getProperties().set ("colour", (int) theme::accent.getARGB());
     templatesButton.setTooltip ("Start from a template (hardware styles, mixing chains, effects), or save / delete your own.");
     templatesButton.onClick = [this] { showTemplateMenu(); };
     templatesButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("TEMPLATES \xe2\x96\xbe")));
-    navButton.getProperties().set ("link", true);
     exportButton.setButtonText ("Export blueprint");
 
-    for (auto* b : { &aButton, &bButton, &matchButton, &undoButton, &redoButton, &exportButton, &navButton, &templatesButton })
+    for (auto* b : { &abButton, &matchButton, &undoButton, &redoButton, &exportButton, &templatesButton })
         addAndMakeVisible (b);
     startTimerHz (6);
+    timerCallback();
 }
 
 void HeaderBar::loadTemplate (const juce::ValueTree& bridge, const juce::String& name)
@@ -55,7 +51,7 @@ void HeaderBar::loadTemplate (const juce::ValueTree& bridge, const juce::String&
     ui.proc.checkpoint();
     ui.proc.setProjectName (name);
     ui.select (-1);
-    if (ui.backToBridge) ui.backToBridge();
+    if (ui.closeDialogs) ui.closeDialogs();
     if (ui.onBridgeChanged) ui.onBridgeChanged();
     if (ui.onTemplateLoaded) ui.onTemplateLoaded();
 }
@@ -145,25 +141,13 @@ void HeaderBar::saveTemplateDialog()
 void HeaderBar::timerCallback()
 {
     const bool b = bypass->getValue() > 0.5f;
-    aButton.setToggleState (! b, juce::dontSendNotification);
-    bButton.setToggleState (b, juce::dontSendNotification);
+    abButton.setToggleState (b, juce::dontSendNotification);
+    abButton.setButtonText (b ? juce::String (juce::CharPointer_UTF8 ("B \xc2\xb7 DRY")) : juce::String (juce::CharPointer_UTF8 ("A \xc2\xb7 PROCESSED")));
     matchButton.setButtonText (matchButton.getToggleState() ? "MATCH  ON" : "MATCH  OFF");
     undoButton.setEnabled (ui.proc.canUndo());
     redoButton.setEnabled (ui.proc.canRedo());
     if (! study.isBeingEdited() && study.getText() != ui.proc.projectName())
         study.setText (ui.proc.projectName(), juce::dontSendNotification);
-    // navigation: where am I, and the way back
-    juce::String loc = "OVERVIEW";
-    if (ui.openEditorId >= 0)
-        if (auto* n = ui.proc.graph().node (ui.openEditorId))
-            loc = juce::String (n->name).toUpperCase();
-    const bool away = ui.openEditorId >= 0;
-    navButton.setButtonText (away ? juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90 Bridge")) : juce::String ("Bridge"));
-    navButton.getProperties().set ("colour", (int) (away ? theme::accent : theme::ink).getARGB());
-    navButton.setToggleState (! away, juce::dontSendNotification);
-    navButton.setSize (juce::GlyphArrangement::getStringWidthInt (theme::heading (20.0f), navButton.getButtonText()) + 6, navButton.getHeight());
-    if (away) loc = ui.openEditorId >= 0 && ui.proc.graph().node (ui.openEditorId) ? juce::String (ui.proc.graph().node (ui.openEditorId)->name) : loc;
-    if (loc != location) { location = loc; repaint(); }
     repaint (getLocalBounds().removeFromRight (176));
 }
 
@@ -181,26 +165,6 @@ void HeaderBar::paint (juce::Graphics& g)
     g.setColour (theme::edge);
     g.drawVerticalLine (236, 22.0f, (float) getHeight() - 22.0f);
     g.drawVerticalLine (study.getX() - 10, 22.0f, (float) getHeight() - 22.0f);
-
-    // where am I:  Bridge / OVERVIEW   or   <- Bridge / Air & body  ESC
-    const int x = navButton.getRight() + 6;
-    g.setColour (theme::textFaint);
-    g.setFont (theme::mono (10.0f));
-    g.drawText ("/", juce::Rectangle<int> (x, 0, 12, getHeight()), juce::Justification::centred);
-    const int room = study.getX() - 22 - (x + 18);
-    if (ui.openEditorId >= 0)
-    {
-        g.setColour (theme::ink);
-        const auto f = theme::heading (20.0f);
-        g.setFont (f);
-        const int w = juce::jmin (room - 34, juce::GlyphArrangement::getStringWidthInt (f, location));
-        g.drawText (location, juce::Rectangle<int> (x + 18, 0, w, getHeight()), juce::Justification::centredLeft, true);
-        g.setColour (theme::textFaint);
-        g.setFont (theme::mono (9.0f));
-        g.drawText ("ESC", juce::Rectangle<int> (x + 24 + w, 2, 30, getHeight()), juce::Justification::centredLeft);
-    }
-    else
-        g.drawText (location, juce::Rectangle<int> (x + 18, 0, room, getHeight()), juce::Justification::centredLeft, true);
 
     g.setColour (theme::textFaint);
     g.setFont (theme::mono (9.5f));
@@ -220,7 +184,6 @@ void HeaderBar::paint (juce::Graphics& g)
 
 void HeaderBar::resized()
 {
-    navButton.setBounds (250, 22, 96, 32);
     templatesButton.setBounds (690, 25, 112, 26);
     auto r = getLocalBounds().withTrimmedRight (176).reduced (0, 18);
     exportButton.setBounds (r.removeFromRight (178).withSizeKeepingCentre (178, 40));
@@ -230,10 +193,10 @@ void HeaderBar::resized()
     undoButton.setBounds (r.removeFromRight (52).withSizeKeepingCentre (52, 26));
     r.removeFromRight (18);
     matchButton.setBounds (r.removeFromRight (96).withSizeKeepingCentre (96, 26));
-    bButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 26));
-    aButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 26));
-    templatesButton.setBounds (aButton.getX() - 136, 25, 112, 26);
-    study.setBounds (560, 28, templatesButton.getX() - 576, 28);
+    r.removeFromRight (4);
+    abButton.setBounds (r.removeFromRight (150).withSizeKeepingCentre (150, 26));
+    templatesButton.setBounds (abButton.getX() - 136, 25, 112, 26);
+    study.setBounds (262, 28, templatesButton.getX() - 290, 28);
 }
 
 // ================================================================== SPECTRUM
@@ -473,7 +436,7 @@ void SpectrumPanel::paint (juce::Graphics& g)
         g.restoreState();
         g.setColour (theme::accent);
         g.setFont (theme::mono (9.5f));
-        g.drawText ("EQ: " + juce::String (n->name).toUpperCase() + "  " + juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"))
+        g.drawText ("EQ CURVE SCALE  " + juce::String (juce::CharPointer_UTF8 ("\xc2\xb1"))
                         + numText (range, range < 2 ? 1 : 0) + " dB",
                     getLocalBounds().removeFromBottom (28).withTrimmedRight (300).reduced (48, 0), juce::Justification::centredRight);
     }
@@ -504,13 +467,6 @@ void SpectrumPanel::paint (juce::Graphics& g)
     g.setColour (theme::ink);
     g.drawRect (r.expanded (0.5f), 1.0f);
 
-    // footnote with conditions
-    g.setColour (theme::textFaint);
-    g.setFont (theme::mono (9.5f));
-    const juce::String mode = ui.res.mode == AnalysisWorker::Mode::chain ? "IN = BRIDGE INPUT, OUT = BRIDGE OUTPUT" : "IN = SIDECHAIN, OUT = MAIN INPUT";
-    g.drawText ("FFT " + juce::String (ui.res.fftSize) + " - " + juce::String (sonic::windowName (ui.res.window)).toUpperCase()
-                    + " - LEFT CH - " + mode + " - MEASURED",
-                getLocalBounds().removeFromBottom (28).withTrimmedLeft (48), juce::Justification::centredLeft);
     theme::cropMarks (g, getLocalBounds());
 }
 

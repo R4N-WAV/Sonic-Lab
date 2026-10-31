@@ -10,6 +10,8 @@ add_library(sonic_core STATIC
     src/Graph.cpp
     src/ModuleRegistry.cpp
     src/TransferAnalyzer.cpp
+    src/Preview.cpp
+    src/EqMatch.cpp
     src/modules/TubeModule.cpp
     src/modules/EqModule.cpp
     src/modules/SaturationModule.cpp

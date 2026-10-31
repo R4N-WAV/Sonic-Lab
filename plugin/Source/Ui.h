@@ -18,11 +18,8 @@ struct Ui
     // selection: block id, or sonic::Graph::kInputId / kOutputId, or -1
     int selected = -1;
     std::function<void()> onSelectionChanged;
-    std::function<void (int)> openFullEditor;   // block id
     std::function<void()> onBridgeChanged;      // structure changed (rebuild views)
-    std::function<void()> backToBridge;         // close any full editor / dialog
-    int openEditorId = -1;                      // block whose full editor is open, or -1
-    std::function<void()> onNavigationChanged;
+    std::function<void()> closeDialogs;         // close an open dialog (export)
     std::function<void()> onTemplateLoaded;
     juce::Component* menuParent = nullptr;      // popup menus render inside the plugin (scaled with it)
 

@@ -212,6 +212,7 @@ void SaturationModule::reset()
         c.tiltLo.reset(); c.tiltHi.reset(); c.lp.reset();
         c.dLo.clear(); c.dHi.clear(); c.dG.clear();
     }
+    havePrev = false;
 }
 
 int SaturationModule::latencySamples() const
@@ -240,6 +241,19 @@ void SaturationModule::process (float* const* io, int numCh, int n)
     const bool useLo = fLo > 21.0, useHi = fHi < 19990.0;
     const double tilt = getParam (pTilt), lpHz = getParam (pLp);
     const bool ms = getParam (pStereo) > 0.5f && numCh == 2;
+
+    if (! havePrev)
+    {
+        prevK = k; prevDrive = drive; prevOut = out; prevBias = bias; prevLd = ld;
+        havePrev = true;
+    }
+    bool coeffsMove = std::abs (prevK.knee - k.knee) > 1e-12 || std::abs (prevK.y0 - k.y0) > 1e-12
+                      || std::abs (prevK.slope - k.slope) > 1e-12 || std::abs (prevBias - bias) > 1e-12;
+    for (int h = 1; h <= kMaxHarmonic && ! coeffsMove; ++h)
+        coeffsMove = std::abs (prevK.c[h] - k.c[h]) > 1e-12;
+    const Coeffs k0 = prevK;
+    const double drive0 = prevDrive, out0 = prevOut, bias0 = prevBias, ld0 = prevLd;
+    const double invN = 1.0 / std::max (1, n);
 
     for (auto& c : ch)
     {
@@ -272,15 +286,18 @@ void SaturationModule::process (float* const* io, int numCh, int n)
             // ---- focus split + drive + level normalisation ----
             for (int i = 0; i < len; ++i)
             {
+                const double t = (start + i + 1) * invN;
+                const double drv = drive0 + (drive - drive0) * t;
+                const double ldt = ld0 + (ld - ld0) * t;
                 const double in = x[i];
                 const double lo = useLo ? st.lo.process (in) : 0.0;
                 const double rest = in - lo;
                 const double band = useHi ? st.hi.process (rest) : rest;
                 lowBuf[(size_t) i] = (float) lo;
                 highBuf[(size_t) i] = (float) (rest - band);
-                const double u = band * drive;
+                const double u = band * drv;
                 const double e = st.env.process (std::abs (u));
-                const double g = std::clamp (std::pow (std::max (e, 1e-4) / 0.98, ld - 1.0), 1e-3, 1e3);
+                const double g = std::clamp (std::pow (std::max (e, 1e-4) / 0.98, ldt - 1.0), 1e-3, 1e3);
                 bandBuf[(size_t) i] = (float) (u * g);
                 x[i] = (float) g; // temporarily store the normalisation gain
             }
@@ -288,10 +305,32 @@ void SaturationModule::process (float* const* io, int numCh, int n)
             // ---- oversampled shaper ----
             double* os = st.os.upsample (bandBuf.data(), len);
             const int total = len * factor;
-            for (int j = 0; j < total; ++j)
+            if (! coeffsMove)
             {
-                const double v = shaperIn (os[j] + bias, k.knee);
-                os[j] = (poly (k, v) - k.y0) / k.slope;
+                for (int j = 0; j < total; ++j)
+                {
+                    const double v = shaperIn (os[j] + bias, k.knee);
+                    os[j] = (poly (k, v) - k.y0) / k.slope;
+                }
+            }
+            else
+            {
+                // glide every coefficient across the block (the polynomial is linear in them)
+                double tch[kMaxHarmonic + 1];
+                for (int j = 0; j < total; ++j)
+                {
+                    const double t = (start + (j + 1) / (double) factor) * invN;
+                    const double knee = k0.knee + (k.knee - k0.knee) * t;
+                    const double y0 = k0.y0 + (k.y0 - k0.y0) * t;
+                    const double slope = k0.slope + (k.slope - k0.slope) * t;
+                    const double b = bias0 + (bias - bias0) * t;
+                    const double v = shaperIn (os[j] + b, knee);
+                    chebyshev (v, tch, kMaxHarmonic);
+                    double y = 0.0;
+                    for (int h = 1; h <= kMaxHarmonic; ++h)
+                        y += (k0.c[h] + (k.c[h] - k0.c[h]) * t) * tch[h];
+                    os[j] = (y - y0) / (std::abs (slope) > 1e-3 ? slope : 1.0);
+                }
             }
             st.os.downsample (bandBuf.data(), len);
 
@@ -299,18 +338,19 @@ void SaturationModule::process (float* const* io, int numCh, int n)
             const int lat = factor > 1 ? Oversampler::kLatency : 0;
             for (int i = 0; i < len; ++i)
             {
+                const double t = (start + i + 1) * invN;
                 st.dLo.push (lowBuf[(size_t) i]);
                 st.dHi.push (highBuf[(size_t) i]);
                 st.dG.push (x[i]);
                 const double g = lat > 0 ? st.dG.readInt (lat) : x[i];
                 double y = bandBuf[(size_t) i] / std::max (g, 1e-3);
                 if (autoGain)
-                    y /= drive;
+                    y /= drive0 + (drive - drive0) * t;
                 y += lat > 0 ? (double) st.dLo.readInt (lat) + st.dHi.readInt (lat) : (double) lowBuf[(size_t) i] + highBuf[(size_t) i];
                 y = st.tiltHi.process (st.tiltLo.process (y));
                 y = st.lp.process (y);
                 y = st.dc.process (y);
-                x[i] = (float) (y * out);
+                x[i] = (float) (y * (out0 + (out - out0) * t));
             }
         }
 
@@ -322,6 +362,7 @@ void SaturationModule::process (float* const* io, int numCh, int n)
                 R[i] = m - s;
             }
     }
+    prevK = k; prevDrive = drive; prevOut = out; prevBias = bias; prevLd = ld;
 }
 
 } // namespace sonic
