@@ -32,6 +32,13 @@ void Module::setParam (int index, float value)
         value = std::round (value);
 
     values[index].store (value, std::memory_order_relaxed);
+    version.fetch_add (1, std::memory_order_relaxed);
+}
+
+void Module::resetParamsToDefault()
+{
+    for (size_t i = 0; i < specs.size(); ++i)
+        setParam ((int) i, specs[i].defaultValue);
 }
 
 float Module::getParam (int index) const

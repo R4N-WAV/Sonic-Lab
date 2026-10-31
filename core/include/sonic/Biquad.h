@@ -18,6 +18,13 @@ struct BiquadCoeffs
     static BiquadCoeffs highShelf (double fs, double freq, double slope, double gainDb);
     static BiquadCoeffs highPass (double fs, double freq, double q);
     static BiquadCoeffs lowPass (double fs, double freq, double q);
+    static BiquadCoeffs highPass1 (double fs, double freq);   // first order
+    static BiquadCoeffs lowPass1 (double fs, double freq);    // first order
+    static BiquadCoeffs notch (double fs, double freq, double q);
+    static BiquadCoeffs bandPass (double fs, double freq, double q); // 0 dB peak
+    // Shelves parameterised by Q (RBJ), as used by the parametric EQ
+    static BiquadCoeffs lowShelfQ (double fs, double freq, double q, double gainDb);
+    static BiquadCoeffs highShelfQ (double fs, double freq, double q, double gainDb);
 
     std::complex<double> responseAt (double fs, double freq) const;
     double magnitudeAt (double fs, double freq) const { return std::abs (responseAt (fs, freq)); }
