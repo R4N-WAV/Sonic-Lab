@@ -1,4 +1,4 @@
-name: Build ATELIER (Windows x64 VST3 + installer)
+name: Build Atelier (Windows x64 VST3 + installer)
 
 on:
   push:
@@ -22,14 +22,40 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
           "build=build ${{ github.run_number }} ($sha)" >> $env:GITHUB_OUTPUT
 
+      - name: Fetch UI fonts (SIL OFL)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # Google Fonts serves plain TTF to non-browser user agents. If this fails the
+          # plugin still builds and falls back to system fonts.
+          New-Item -ItemType Directory -Force plugin\Fonts | Out-Null
+          $fonts = @{
+            "CormorantGaramond-SemiBoldItalic.ttf" = "Cormorant+Garamond:ital,wght@1,600"
+            "IBMPlexMono-Regular.ttf"              = "IBM+Plex+Mono:wght@400"
+            "IBMPlexMono-Medium.ttf"               = "IBM+Plex+Mono:wght@500"
+            "InterTight-Regular.ttf"               = "Inter+Tight:wght@400"
+            "InterTight-Medium.ttf"                = "Inter+Tight:wght@500"
+            "InterTight-SemiBold.ttf"              = "Inter+Tight:wght@600"
+          }
+          foreach ($name in $fonts.Keys) {
+            $css = (Invoke-WebRequest -UseBasicParsing -UserAgent "Wget/1.21" "https://fonts.googleapis.com/css2?family=$($fonts[$name])").Content
+            $url = [regex]::Match($css, "url\((https://[^)]+)\)").Groups[1].Value
+            if (-not $url) { throw "no font url for $name" }
+            Invoke-WebRequest -UseBasicParsing $url -OutFile "plugin\Fonts\$name"
+            Write-Output "$name <- $url ($((Get-Item "plugin\Fonts\$name").Length) bytes)"
+          }
+
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
       - name: Build VST3 + tests
-        run: cmake --build build --config Release --target Atelier_VST3 sonic_core_tests atelier_plugin_tests --parallel
+        run: cmake --build build --config Release --target Atelier_VST3 sonic_core_tests atelier_module_tests atelier_plugin_tests --parallel
 
       - name: Core DSP tests
         run: build\Release\sonic_core_tests.exe
+
+      - name: DSP block tests
+        run: build\Release\atelier_module_tests.exe
 
       - name: Plugin processor tests (headless)
         run: build\plugin\Release\atelier_plugin_tests.exe
@@ -40,7 +66,7 @@ jobs:
         run: |
           Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
-          $p = "build\plugin\Atelier_artefacts\Release\VST3\ATELIER.vst3"
+          $p = "build\plugin\Atelier_artefacts\Release\VST3\Atelier.vst3"
           $out = .\pluginval\pluginval.exe --strictness-level 5 --validate-in-process --output-dir pluginval-logs --validate $p 2>&1 | Out-String
           Write-Output $out
           # pluginval's exit code is unreliable when launched from pwsh; judge by its verdict line.
@@ -55,7 +81,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $vst3 = (Resolve-Path "build\plugin\Atelier_artefacts\Release\VST3\ATELIER.vst3").Path
+          $vst3 = (Resolve-Path "build\plugin\Atelier_artefacts\Release\VST3\Atelier.vst3").Path
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\atelier.iss `
             "/DAppVersion=${{ steps.ver.outputs.version }}" `
             "/DBuildInfo=${{ steps.ver.outputs.build }}" `
@@ -64,19 +90,19 @@ jobs:
 
       - name: Portable ZIP
         shell: pwsh
-        run: Compress-Archive -Path build\plugin\Atelier_artefacts\Release\VST3\ATELIER.vst3 -DestinationPath ATELIER_by_R4N_${{ steps.ver.outputs.version }}_VST3_portable.zip
+        run: Compress-Archive -Path build\plugin\Atelier_artefacts\Release\VST3\Atelier.vst3 -DestinationPath Atelier_${{ steps.ver.outputs.version }}_VST3_portable.zip
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: ATELIER_by_R4N_Setup_${{ steps.ver.outputs.version }}
+          name: Atelier_Setup_${{ steps.ver.outputs.version }}
           path: installer/output/*.exe
 
       - name: Upload portable VST3
         uses: actions/upload-artifact@v4
         with:
-          name: ATELIER_by_R4N_VST3_portable_${{ steps.ver.outputs.version }}
-          path: ATELIER_by_R4N_*_portable.zip
+          name: Atelier_VST3_portable_${{ steps.ver.outputs.version }}
+          path: Atelier_*_portable.zip
 
       - name: Upload validation logs
         if: always()
@@ -90,7 +116,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          "## ATELIER ${{ steps.ver.outputs.version }} - ${{ steps.ver.outputs.build }}" >> $env:GITHUB_STEP_SUMMARY
-          "- Core DSP + plugin processor tests: passed (build would have stopped otherwise)" >> $env:GITHUB_STEP_SUMMARY
+          "## Atelier ${{ steps.ver.outputs.version }} - ${{ steps.ver.outputs.build }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Core DSP, block and plugin tests: passed (build would have stopped otherwise)" >> $env:GITHUB_STEP_SUMMARY
           "- pluginval strictness 5: ${{ steps.pluginval.outcome }}" >> $env:GITHUB_STEP_SUMMARY
           "- Download the installer from the Artifacts section below." >> $env:GITHUB_STEP_SUMMARY

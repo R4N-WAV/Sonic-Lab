@@ -1,91 +1,130 @@
 #include "PluginEditor.h"
+#include "Blueprint.h"
+
+void AtelierEditor::Content::paint (juce::Graphics& g)
+{
+    g.fillAll (theme::bg);
+    g.setColour (theme::textDim);
+    g.setFont (theme::mono (9.0f));
+    g.drawText ("ATELIER - WORK IN PROGRESS - c/o R4N - OSLO", juce::Rectangle<int> (24, kH - 20, 600, 18), juce::Justification::centredLeft);
+    g.drawText ("v" JucePlugin_VersionString, juce::Rectangle<int> (kW - 224, kH - 20, 200, 18), juce::Justification::centredRight);
+}
 
 AtelierEditor::AtelierEditor (AtelierProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
     setLookAndFeel (&lnf);
+    addAndMakeVisible (content);
+    for (juce::Component* c : { (juce::Component*) &header, (juce::Component*) &spectrum, (juce::Component*) &readout,
+                                (juce::Component*) &bridge, (juce::Component*) &inspector })
+        content.addAndMakeVisible (c);
 
-    addAndMakeVisible (sourcePanel);
-    addAndMakeVisible (chainPanel);
-    addAndMakeVisible (moduleEditor);
-    addAndMakeVisible (analysisPanel);
-    chainPanel.onSelect = [this] (int m) { moduleEditor.setModule (m); };
+    header.setBounds (0, 0, kW, 72);
+    spectrum.setBounds (24, 88, 1240, 432);
+    readout.setBounds (1280, 88, 296, 432);
+    bridge.setBounds (24, 536, 1220, 440);
+    inspector.setBounds (1260, 536, 316, 440);
 
+    ui.onSelectionChanged = [this] { inspector.rebuild(); bridge.repaint(); spectrum.repaint(); };
+    ui.onBridgeChanged = [this]
+    {
+        inspector.rebuild();
+        bridge.repaint();
+        if (overlay != nullptr && proc.graph().node (overlay->node()) == nullptr)
+            closeEditor();
+    };
+    ui.openFullEditor = [this] (int id) { openEditor (id); };
+    header.onExport = [this] { showExport(); };
+
+    // size: as large as the screen comfortably allows, fixed 16:10 aspect
     setResizable (true, true);
-    setResizeLimits (1180, 780, 2560, 1600);
-    setSize (1440, 900);
-    startTimerHz (4);
+    getConstrainer()->setFixedAspectRatio ((double) kW / kH);
+    setResizeLimits (960, 600, 3200, 2000);
+    int w = kW;
+    if (auto* d = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+        w = juce::jmin (kW, (int) (d->userArea.getWidth() * 0.92), (int) (d->userArea.getHeight() * 0.9 * kW / kH));
+    setSize (w, w * kH / kW);
+    setWantsKeyboardFocus (true);
+    startTimerHz (20);
 }
 
 AtelierEditor::~AtelierEditor()
 {
+    overlay.reset();
+    exportDialog.reset();
     setLookAndFeel (nullptr);
-}
-
-void AtelierEditor::timerCallback()
-{
-    repaint (header);
 }
 
 void AtelierEditor::paint (juce::Graphics& g)
 {
     g.fillAll (theme::bg);
-
-    // ---- Header: wordmark + live status ----
-    auto h = header.reduced (16, 0);
-    g.setColour (theme::text);
-    g.setFont (juce::Font (juce::FontOptions (22.0f, juce::Font::plain)).withExtraKerningFactor (0.35f));
-    auto mark = h.removeFromLeft (150);
-    g.drawText ("ATELIER", mark, juce::Justification::centredLeft);
-    g.setColour (theme::accent);
-    g.setFont (theme::bold (10.0f).withExtraKerningFactor (0.3f));
-    g.drawText ("BY R4N", h.removeFromLeft (60), juce::Justification::centredLeft);
-    g.setColour (theme::textFaint);
-    g.setFont (theme::label (12.0f));
-    g.drawText ("Understand sound. Shape character.", h.removeFromLeft (260), juce::Justification::centredLeft);
-
-    // status (right side)
-    juce::String scText;
-    juce::Colour scColour;
-    switch (proc.sidechainState())
-    {
-        case AtelierProcessor::SidechainState::active:       scText = "SIDECHAIN: ACTIVE";        scColour = theme::good; break;
-        case AtelierProcessor::SidechainState::silent:       scText = "SIDECHAIN: SILENT";        scColour = theme::warn; break;
-        case AtelierProcessor::SidechainState::notConnected:
-        default:                                              scText = "SIDECHAIN: NOT CONNECTED"; scColour = theme::textFaint; break;
-    }
-    auto pill = h.removeFromRight (190).withSizeKeepingCentre (180, 22);
-    g.setColour (scColour.withAlpha (0.12f));
-    g.fillRoundedRectangle (pill.toFloat(), 3.0f);
-    g.setColour (scColour);
-    g.drawRoundedRectangle (pill.toFloat().reduced (0.5f), 3.0f, 1.0f);
-    g.setFont (theme::bold (10.0f));
-    g.drawText (scText, pill, juce::Justification::centred);
-
-    g.setColour (theme::textDim);
-    g.setFont (theme::mono (11.5f));
-    const int overs = proc.clipCount.load();
-    const juce::String status = juce::String (proc.currentSampleRate() / 1000.0, 1) + " kHz   "
-                              + juce::String (proc.currentBlockSize()) + " smp   latency "
-                              + juce::String (proc.currentLatency()) + "   "
-                              + (overs > 0 ? "overs " + juce::String (overs) + "   " : juce::String())
-                              + "v" JucePlugin_VersionString;
-    g.drawText (status, h.removeFromRight (420), juce::Justification::centredRight);
-
-    g.setColour (theme::edge);
-    g.drawHorizontalLine (header.getBottom() - 1, 0.0f, (float) getWidth());
 }
 
 void AtelierEditor::resized()
 {
-    auto r = getLocalBounds();
-    header = r.removeFromTop (52);
-    r.reduce (10, 10);
+    const float scale = (float) getWidth() / (float) kW;
+    content.setBounds (0, 0, kW, kH);
+    content.setTransform (juce::AffineTransform::scale (scale));
+}
 
-    sourcePanel.setBounds (r.removeFromLeft (320));
-    r.removeFromLeft (10);
-    chainPanel.setBounds (r.removeFromLeft (270));
-    r.removeFromLeft (10);
-    moduleEditor.setBounds (r.removeFromTop (juce::jmax (420, r.getHeight() * 45 / 100)));
-    r.removeFromTop (10);
-    analysisPanel.setBounds (r);
+void AtelierEditor::timerCallback()
+{
+    if (! ui.frozen && worker.getResults (ui.res, ui.res.serial))
+    {
+        spectrum.repaint();
+        readout.repaint();
+    }
+}
+
+bool AtelierEditor::keyPressed (const juce::KeyPress& k)
+{
+    if (k == juce::KeyPress ('z', juce::ModifierKeys::commandModifier, 0))
+    {
+        if (proc.undo() && ui.onBridgeChanged) ui.onBridgeChanged();
+        return true;
+    }
+    if (k == juce::KeyPress ('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)
+        || k == juce::KeyPress ('y', juce::ModifierKeys::commandModifier, 0))
+    {
+        if (proc.redo() && ui.onBridgeChanged) ui.onBridgeChanged();
+        return true;
+    }
+    if (k == juce::KeyPress::escapeKey && overlay != nullptr)
+    {
+        closeEditor();
+        return true;
+    }
+    return false;
+}
+
+void AtelierEditor::openEditor (int nodeId)
+{
+    auto* n = proc.graph().node (nodeId);
+    if (n == nullptr)
+        return;
+    ui.select (nodeId);
+    if (n->type == "tone.eq")
+        overlay = std::make_unique<EqEditor> (ui, nodeId);
+    else if (n->type == "character.saturation")
+        overlay = std::make_unique<SaturationEditor> (ui, nodeId);
+    else
+        return; // other blocks use the inspector's advanced view
+    overlay->onClose = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<AtelierEditor> (this)] { if (safe) safe->closeEditor(); }); };
+    content.addAndMakeVisible (*overlay);
+    overlay->setBounds (0, 72, kW, kH - 72 - 20);
+    overlay->toFront (true);
+}
+
+void AtelierEditor::closeEditor()
+{
+    overlay.reset();
+    inspector.rebuild();
+    bridge.repaint();
+}
+
+void AtelierEditor::showExport()
+{
+    exportDialog = Blueprint::createDialog (ui, [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<AtelierEditor> (this)] { if (safe) safe->exportDialog.reset(); }); });
+    content.addAndMakeVisible (*exportDialog);
+    exportDialog->setBounds (0, 0, kW, kH);
+    exportDialog->toFront (true);
 }

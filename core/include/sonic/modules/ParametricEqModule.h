@@ -60,6 +60,10 @@ public:
     float dynamicGainDb (int band) const { return dynGain[(size_t) band].load (std::memory_order_relaxed); }
     static const char* slopeName (int index);
 
+    // Offline rendering: designs the linear-phase filter synchronously (no
+    // background thread latency). Call after prepare().
+    void prepareOffline();
+
 private:
     static constexpr int kGlobalParams = 3; // phase, linear quality, output
 
@@ -102,6 +106,7 @@ private:
     std::atomic<bool> linearActive { false };
     std::atomic<unsigned> designedVersion { ~0u };
     std::atomic<double> workerFs { 48000.0 };
+    std::mutex designMutex;
 };
 
 } // namespace sonic

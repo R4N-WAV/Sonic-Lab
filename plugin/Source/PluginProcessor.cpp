@@ -1,22 +1,12 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-#include <sonic/DspUtils.h>
-#include <sonic/modules/EqModule.h>
-#include <sonic/modules/TubeModule.h>
+#include <sonic/ModuleRegistry.h>
 
 namespace
 {
-    constexpr int kDryDelaySize = 8192; // >= max chain latency
+    constexpr int kDryDelaySize = 1 << 16; // >= max bridge latency
 
-    std::unique_ptr<sonic::Module> makeModule (int index)
-    {
-        if (index == 0) return std::make_unique<sonic::TubeModule>();
-        return std::make_unique<sonic::EqModule>();
-    }
-    constexpr int kNumModules = 2;
-
-    // Text formatting shared by every parameter (also used by host automation lanes).
     juce::String formatWithUnit (float v, const juce::String& unit)
     {
         if (unit == "Hz")
@@ -50,32 +40,19 @@ namespace
     }
 }
 
-constexpr const char* AtelierProcessor::kModuleKeys[];
-
-juce::String AtelierProcessor::paramId (int moduleIndex, const std::string& coreId)
-{
-    return juce::String (kModuleKeys[moduleIndex]) + "." + juce::String (coreId);
-}
-
-juce::String AtelierProcessor::enabledId (int moduleIndex)
-{
-    return juce::String (kModuleKeys[moduleIndex]) + ".enabled";
-}
-
 juce::AudioProcessorValueTreeState::ParameterLayout AtelierProcessor::createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     using juce::ParameterID;
 
-    // Global / routing
     layout.add (std::make_unique<juce::AudioParameterChoice> (ParameterID { "src.mode", 1 }, "Source",
                                                               juce::StringArray { "DAW Input", "Generator", "Audio File" }, 0));
-    layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { "chain.bypass", 1 }, "A/B Bypass", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { "chain.bypass", 1 }, "A/B (B = dry)", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { "ab.gain_match", 2 }, "Gain match", true));
     layout.add (floatParam ("io.in_trim_db", "Input Trim", -24, 24, 0, 0, "dB"));
     layout.add (floatParam ("io.out_trim_db", "Output Trim", -24, 24, 0, 0, "dB"));
     layout.add (floatParam ("file.gain_db", "File Gain", -36, 12, 0, 0, "dB"));
 
-    // Generator
     juce::StringArray waves;
     for (int i = 0; i < (int) sonic::SignalGenerator::Waveform::numWaveforms; ++i)
         waves.add (sonic::SignalGenerator::waveformName ((sonic::SignalGenerator::Waveform) i));
@@ -90,76 +67,20 @@ juce::AudioProcessorValueTreeState::ParameterLayout AtelierProcessor::createLayo
     layout.add (floatParam ("gen.sweep_start_hz", "Sweep Start", 10, 20000, 20, 1000, "Hz"));
     layout.add (floatParam ("gen.sweep_end_hz", "Sweep End", 10, 20000, 20000, 1000, "Hz"));
     layout.add (floatParam ("gen.sweep_s", "Sweep Time", 0.5f, 60, 10, 10, "s"));
-
-    // Chain modules: parameters generated from the core ParamSpecs (single source of truth)
-    for (int m = 0; m < kNumModules; ++m)
-    {
-        auto mod = makeModule (m);
-        layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { enabledId (m), 1 },
-                                                                juce::String (mod->displayName()) + " On", true));
-        for (const auto& s : mod->params())
-        {
-            const auto id = paramId (m, s.id);
-            const auto name = juce::String (mod->displayName()) + " " + juce::String (s.name);
-            if (s.isChoice())
-            {
-                juce::StringArray items;
-                for (auto& c : s.choices)
-                    items.add (c);
-                layout.add (std::make_unique<juce::AudioParameterChoice> (ParameterID { id, 1 }, name, items, (int) s.defaultValue));
-            }
-            else
-            {
-                layout.add (floatParam (id, name, s.minValue, s.maxValue, s.defaultValue, s.skewCentre, juce::String (s.unit)));
-            }
-        }
-    }
     return layout;
 }
 
-AtelierProcessor::BusesProperties AtelierProcessor::makeBuses()
-{
-    return BusesProperties()
-        .withInput ("Input", juce::AudioChannelSet::stereo(), true)
-        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-        .withInput ("Sidechain (unprocessed reference)", juce::AudioChannelSet::stereo(), false);
-}
-
 AtelierProcessor::AtelierProcessor()
-    : AudioProcessor (makeBuses()),
+    : AudioProcessor (BusesProperties()
+                          .withInput ("Input", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
+                          .withInput ("Sidechain (unprocessed reference)", juce::AudioChannelSet::stereo(), false)),
       apvts (*this, nullptr, "ATELIER", createLayout())
 {
-    for (int m = 0; m < kNumModules; ++m)
-        processingChain.addModule (makeModule (m));
-
-    bindParameters();
-
-    // Report the real latency before the host calls prepareToPlay.
-    latencyNow = processingChain.latencySamples();
-    setLatencySamples (latencyNow.load());
-
-    formatManager.registerBasicFormats();
-    readAheadThread.startThread (juce::Thread::Priority::normal);
-    apvts.state.setProperty ("chainOrder", "0,1", nullptr);
-}
-
-AtelierProcessor::~AtelierProcessor()
-{
-    transportSource.setSource (nullptr);
-    readAheadThread.stopThread (2000);
-}
-
-void AtelierProcessor::bindParameters()
-{
-    auto raw = [this] (const juce::String& id)
-    {
-        auto* p = apvts.getRawParameterValue (id);
-        jassert (p != nullptr);
-        return p;
-    };
-
+    auto raw = [this] (const char* id) { return apvts.getRawParameterValue (id); };
     pSource = raw ("src.mode");
     pBypass = raw ("chain.bypass");
+    pMatch = raw ("ab.gain_match");
     pInTrim = raw ("io.in_trim_db");
     pOutTrim = raw ("io.out_trim_db");
     pFileGain = raw ("file.gain_db");
@@ -174,35 +95,127 @@ void AtelierProcessor::bindParameters()
     pSweepEnd = raw ("gen.sweep_end_hz");
     pSweepTime = raw ("gen.sweep_s");
 
-    links.clear();
-    enabledParams.clear();
-    for (int m = 0; m < processingChain.size(); ++m)
-    {
-        auto& mod = processingChain.module (m);
-        enabledParams.push_back (raw (enabledId (m)));
-        for (int i = 0; i < mod.numParams(); ++i)
-            links.push_back ({ raw (paramId (m, mod.params()[(size_t) i].id)), &mod, i });
-    }
-    syncParameters();
+    formatManager.registerBasicFormats();
+    readAheadThread.startThread (juce::Thread::Priority::normal);
+    checkpoint();
+    startTimerHz (4);
 }
 
-void AtelierProcessor::syncParameters()
+AtelierProcessor::~AtelierProcessor()
 {
-    for (auto& l : links)
-        l.module->setParam (l.index, l.raw->load (std::memory_order_relaxed));
-    for (size_t m = 0; m < enabledParams.size(); ++m)
-        processingChain.setEnabled ((int) m, enabledParams[m]->load() > 0.5f);
-
-    gen.waveform = (int) pGenWave->load();
-    gen.frequencyHz = pGenFreq->load();
-    gen.levelDb = pGenLevel->load();
-    gen.phaseDeg = pGenPhase->load();
-    gen.dcOffset = pGenDc->load();
-    gen.channelMode = (int) pGenChannels->load();
-    gen.sweepStartHz = pSweepStart->load();
-    gen.sweepEndHz = pSweepEnd->load();
-    gen.sweepSeconds = pSweepTime->load();
+    stopTimer();
+    transportSource.setSource (nullptr);
+    readAheadThread.stopThread (2000);
 }
+
+void AtelierProcessor::timerCallback()
+{
+    bridge.collectGarbage();
+}
+
+// ------------------------------------------------------------------ bridge state
+
+juce::ValueTree AtelierProcessor::graphToTree (const sonic::Graph& g)
+{
+    juce::ValueTree t ("BRIDGE");
+    t.setProperty ("format", 1, nullptr);
+    for (int id : g.nodeIds())
+    {
+        const auto* n = g.node (id);
+        juce::ValueTree nt ("BLOCK");
+        nt.setProperty ("id", id, nullptr);
+        nt.setProperty ("type", juce::String (n->type), nullptr);
+        nt.setProperty ("name", juce::String (n->name), nullptr);
+        nt.setProperty ("x", n->x, nullptr);
+        nt.setProperty ("y", n->y, nullptr);
+        nt.setProperty ("mix", n->mix.load(), nullptr);
+        nt.setProperty ("out_db", n->outGainDb.load(), nullptr);
+        nt.setProperty ("enabled", n->enabled.load(), nullptr);
+        juce::ValueTree params ("PARAMS");
+        const auto& m = *n->module;
+        for (int i = 0; i < m.numParams(); ++i)
+            params.setProperty (juce::Identifier (juce::String (m.params()[(size_t) i].id)), m.getParam (i), nullptr);
+        nt.appendChild (params, nullptr);
+        t.appendChild (nt, nullptr);
+    }
+    for (auto& e : g.edges())
+    {
+        juce::ValueTree et ("WIRE");
+        et.setProperty ("from", e.from, nullptr);
+        et.setProperty ("to", e.to, nullptr);
+        t.appendChild (et, nullptr);
+    }
+    return t;
+}
+
+void AtelierProcessor::treeToGraph (const juce::ValueTree& t, sonic::Graph& g)
+{
+    if (! t.isValid() || ! t.hasType ("BRIDGE"))
+        return;
+    g.clear();
+    for (const auto& nt : t)
+    {
+        if (! nt.hasType ("BLOCK"))
+            continue;
+        const int id = g.addNode (nt["type"].toString().toStdString(), (float) nt["x"], (float) nt["y"], (int) nt["id"]);
+        if (id < 0)
+            continue;
+        auto* n = g.node (id);
+        n->name = nt.getProperty ("name", juce::String (n->module->displayName())).toString().toStdString();
+        n->mix = (float) nt.getProperty ("mix", 1.0f);
+        n->outGainDb = (float) nt.getProperty ("out_db", 0.0f);
+        n->enabled = (bool) nt.getProperty ("enabled", true);
+        const auto params = nt.getChildWithName ("PARAMS");
+        for (int i = 0; i < n->module->numParams(); ++i)
+        {
+            const juce::Identifier pid (juce::String (n->module->params()[(size_t) i].id));
+            if (params.hasProperty (pid))
+                n->module->setParam (i, (float) params[pid]);
+        }
+    }
+    for (const auto& et : t)
+        if (et.hasType ("WIRE"))
+            g.connect ((int) et["from"], (int) et["to"]);
+}
+
+juce::ValueTree AtelierProcessor::bridgeToTree() const { return graphToTree (bridge); }
+
+void AtelierProcessor::bridgeFromTree (const juce::ValueTree& t)
+{
+    treeToGraph (t, bridge);
+}
+
+void AtelierProcessor::checkpoint()
+{
+    const auto xml = bridgeToTree().toXmlString();
+    if (undoPos >= 0 && undoPos < (int) undoStack.size() && undoStack[(size_t) undoPos] == xml)
+        return;
+    undoStack.resize ((size_t) (undoPos + 1));
+    undoStack.push_back (xml);
+    if (undoStack.size() > 100)
+        undoStack.erase (undoStack.begin());
+    undoPos = (int) undoStack.size() - 1;
+}
+
+bool AtelierProcessor::undo()
+{
+    if (! canUndo())
+        return false;
+    --undoPos;
+    bridgeFromTree (juce::ValueTree::fromXml (undoStack[(size_t) undoPos]));
+    return true;
+}
+
+bool AtelierProcessor::redo()
+{
+    if (! canRedo())
+        return false;
+    ++undoPos;
+    bridgeFromTree (juce::ValueTree::fromXml (undoStack[(size_t) undoPos]));
+    return true;
+}
+
+// ------------------------------------------------------------------ audio
 
 AtelierProcessor::Source AtelierProcessor::source() const
 {
@@ -232,6 +245,19 @@ bool AtelierProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
     return true;
 }
 
+void AtelierProcessor::syncGenerator()
+{
+    gen.waveform = (int) pGenWave->load();
+    gen.frequencyHz = pGenFreq->load();
+    gen.levelDb = pGenLevel->load();
+    gen.phaseDeg = pGenPhase->load();
+    gen.dcOffset = pGenDc->load();
+    gen.channelMode = (int) pGenChannels->load();
+    gen.sweepStartHz = pSweepStart->load();
+    gen.sweepEndHz = pSweepEnd->load();
+    gen.sweepSeconds = pSweepTime->load();
+}
+
 void AtelierProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     sampleRateNow = sampleRate;
@@ -243,20 +269,22 @@ void AtelierProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     dryDelay.clear();
     dryDelayPos = 0;
     scBuffer.setSize (2, maxBlock, false, true, false);
-    preBuffer.setSize (1, maxBlock, false, true, false);
+    preBuffer.setSize (2, maxBlock, false, true, false);
 
-    syncParameters();
+    syncGenerator();
     gen.prepare (sampleRate);
-    processingChain.prepare (sampleRate, maxBlock, 2);
+    bridge.prepare (sampleRate, maxBlock);
     transportSource.prepareToPlay (maxBlock, sampleRate);
 
-    for (auto* s : { &inGain, &outGain, &fileGain })
-        s->reset (sampleRate, 0.02);
+    for (auto* s : { &inGain, &outGain, &fileGain, &bGain })
+        s->reset (sampleRate, 0.03);
     inGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pInTrim->load()));
     outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pOutTrim->load()));
     fileGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pFileGain->load()));
+    bGain.setCurrentAndTargetValue (1.0f);
+    wetPow = dryPow = 0.0;
 
-    latencyNow = processingChain.latencySamples();
+    latencyNow = bridge.latencySamples();
     setLatencySamples (latencyNow.load());
 }
 
@@ -272,12 +300,19 @@ void AtelierProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     if (total == 0)
         return;
 
-    syncParameters();
+    syncGenerator();
+    sonic::HostInfo info;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+        {
+            if (auto bpm = pos->getBpm()) info.bpm = *bpm;
+            info.playing = pos->getIsPlaying();
+        }
+    bridge.setHostInfo (info);
 
     auto mainIn = getBusBuffer (buffer, true, 0);
     auto mainOut = getBusBuffer (buffer, false, 0);
 
-    // Sidechain (unprocessed reference) channels, if the host enabled the bus.
     const float* scPtr[2] = { nullptr, nullptr };
     if (getBusCount (true) > 1)
         if (auto* scBus = getBus (true, 1); scBus != nullptr && scBus->isEnabled())
@@ -290,19 +325,14 @@ void AtelierProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
             }
         }
 
-    // The host may exceed the announced block size: process in chunks that fit
-    // the buffers allocated in prepareToPlay (never reallocate here).
     const int chunk = work.getNumSamples();
     for (int start = 0; start < total; start += chunk)
-    {
-        const int n = juce::jmin (chunk, total - start);
-        processChunk (mainIn, mainOut, scPtr, start, n);
-    }
+        processChunk (mainIn, mainOut, scPtr, start, juce::jmin (chunk, total - start));
 
     for (int c = mainOut.getNumChannels(); c < buffer.getNumChannels(); ++c)
         buffer.clear (c, 0, total);
 
-    const int latency = processingChain.latencySamples();
+    const int latency = bridge.latencySamples();
     if (latency != latencyNow.load())
     {
         latencyNow = latency;
@@ -313,7 +343,7 @@ void AtelierProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::AudioBuffer<float>& mainOut,
                                      const float* const* scIn, int start, int n)
 {
-    // ---- Sidechain state + copy (copied because buffers can alias in some hosts) ----
+    // ---- sidechain ----
     const float* scL = nullptr;
     if (scIn[0] != nullptr)
     {
@@ -325,10 +355,9 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
         double sum = 0.0;
         for (int i = 0; i < n; ++i)
             sum += (double) s0[i] * s0[i];
-        const double ms = sum / n;
         const double a = std::exp (-(double) n / (0.5 * sampleRateNow.load()));
-        scEnvelope = ms + a * (scEnvelope - ms);
-        scState = scEnvelope > 1e-10 ? (int) SidechainState::active : (int) SidechainState::silent; // -100 dBFS
+        scEnvelope = sum / n + a * (scEnvelope - sum / n);
+        scState = scEnvelope > 1e-10 ? (int) SidechainState::active : (int) SidechainState::silent;
         measure (sidechainMeter, s0, s1, n);
     }
     else
@@ -337,7 +366,7 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
         scEnvelope = 0.0;
     }
 
-    // ---- Source -> work buffer (processed as stereo internally) ----
+    // ---- source ----
     float* l = work.getWritePointer (0);
     float* r = work.getWritePointer (1);
     switch (source())
@@ -351,7 +380,6 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
                 juce::FloatVectorOperations::clear (r, n);
             }
             break;
-
         case Source::file:
         {
             float* chans[2] = { l, r };
@@ -367,7 +395,6 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
             }
             break;
         }
-
         case Source::dawInput:
         default:
             if (mainIn.getNumChannels() > 0)
@@ -383,7 +410,7 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
             break;
     }
 
-    // ---- Input trim ----
+    // ---- input trim ----
     inGain.setTargetValue (juce::Decibels::decibelsToGain (pInTrim->load()));
     for (int i = 0; i < n; ++i)
     {
@@ -393,9 +420,10 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
     }
     measure (inputMeter, l, r, n);
 
-    // ---- Keep the pre-chain signal: for the scope and the latency-matched dry path ----
-    float* pre = preBuffer.getWritePointer (0);
-    juce::FloatVectorOperations::copy (pre, l, n);
+    float* preL = preBuffer.getWritePointer (0);
+    juce::FloatVectorOperations::copy (preL, l, n);
+
+    // dry history (for B and loudness matching)
     float* dl = dryDelay.getWritePointer (0);
     float* dr = dryDelay.getWritePointer (1);
     {
@@ -408,48 +436,59 @@ void AtelierProcessor::processChunk (juce::AudioBuffer<float>& mainIn, juce::Aud
         }
     }
 
-    // ---- Chain, or bypass delayed by the chain latency (A/B stays time-aligned) ----
+    // ---- bridge ----
+    float* chans[2] = { l, r };
+    bridge.process (chans, 2, n);
+    const int latency = bridge.latencySamples();
+
+    // ---- loudness tracking (A vs aligned dry) for gain-matched A/B ----
+    float* dryAl = preBuffer.getWritePointer (1); // reuse as aligned dry (left)
+    {
+        int pos = (dryDelayPos - latency + kDryDelaySize) & (kDryDelaySize - 1);
+        double wp = 0.0, dp = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const float a = dl[pos], b = dr[pos];
+            dryAl[i] = a;
+            wp += 0.5 * ((double) l[i] * l[i] + (double) r[i] * r[i]);
+            dp += 0.5 * ((double) a * a + (double) b * b);
+            pos = (pos + 1) & (kDryDelaySize - 1);
+        }
+        const double k = std::exp (-(double) n / (1.5 * sampleRateNow.load()));
+        wetPow = wp / n + k * (wetPow - wp / n);
+        dryPow = dp / n + k * (dryPow - dp / n);
+        const double ratioDb = (wetPow > 1e-12 && dryPow > 1e-12) ? 10.0 * std::log10 (wetPow / dryPow) : 0.0;
+        matchDb = (float) juce::jlimit (-24.0, 24.0, ratioDb);
+    }
+
+    // ---- B (dry, latency-aligned, optionally loudness matched) ----
     if (pBypass->load() > 0.5f)
     {
-        const int latency = processingChain.latencySamples();
+        bGain.setTargetValue (pMatch->load() > 0.5f ? juce::Decibels::decibelsToGain (matchDb.load()) : 1.0f);
         int pos = (dryDelayPos - latency + kDryDelaySize) & (kDryDelaySize - 1);
         for (int i = 0; i < n; ++i)
         {
-            l[i] = dl[pos];
-            r[i] = dr[pos];
+            const float g = bGain.getNextValue();
+            l[i] = dl[pos] * g;
+            r[i] = dr[pos] * g;
             pos = (pos + 1) & (kDryDelaySize - 1);
         }
     }
-    else
-    {
-        float* chans[2] = { l, r };
-        processingChain.process (chans, 2, n);
-    }
     dryDelayPos = (dryDelayPos + n) & (kDryDelaySize - 1);
 
-    // ---- Output trim + non-finite guard (no clipping: the DAW owns the output stage) ----
+    // ---- output trim ----
     outGain.setTargetValue (juce::Decibels::decibelsToGain (pOutTrim->load()));
-    int overs = 0;
     for (int i = 0; i < n; ++i)
     {
         const float g = outGain.getNextValue();
-        float a = l[i] * g, b = r[i] * g;
-        if (! std::isfinite (a)) a = 0.0f;
-        if (! std::isfinite (b)) b = 0.0f;
-        if (std::abs (a) > 1.0f || std::abs (b) > 1.0f)
-            ++overs;
-        l[i] = a;
-        r[i] = b;
+        l[i] = std::isfinite (l[i]) ? l[i] * g : 0.0f;
+        r[i] = std::isfinite (r[i]) ? r[i] * g : 0.0f;
     }
-    if (overs > 0)
-        clipCount.fetch_add (overs);
     measure (outputMeter, l, r, n);
 
-    // ---- Analysis scope (time-aligned frames) ----
-    const float* scopeChans[numScopeChannels] = { pre, l, scL };
+    const float* scopeChans[numScopeChannels] = { preL, l, r, scL };
     scope.push (scopeChans, n);
 
-    // ---- Main output ----
     const int numOut = mainOut.getNumChannels();
     if (numOut >= 1)
         juce::FloatVectorOperations::copy (mainOut.getWritePointer (0) + start, l, n);
@@ -479,14 +518,7 @@ void AtelierProcessor::measure (Meter& m, const float* l, const float* r, int n)
     }
 }
 
-void AtelierProcessor::moveChainSlot (int from, int to)
-{
-    processingChain.moveSlot (from, to);
-    juce::StringArray s;
-    for (int i : processingChain.order())
-        s.add (juce::String (i));
-    apvts.state.setProperty ("chainOrder", s.joinIntoString (","), nullptr);
-}
+// ------------------------------------------------------------------ file
 
 bool AtelierProcessor::loadFile (const juce::File& f, juce::String& error)
 {
@@ -499,7 +531,6 @@ bool AtelierProcessor::loadFile (const juce::File& f, juce::String& error)
     const double fileRate = reader->sampleRate;
     auto newSource = std::make_unique<juce::AudioFormatReaderSource> (reader.release(), true);
     newSource->setLooping (true);
-
     transportSource.stop();
     transportSource.setSource (newSource.get(), 65536, &readAheadThread, fileRate, 2);
     readerSource = std::move (newSource);
@@ -509,10 +540,14 @@ bool AtelierProcessor::loadFile (const juce::File& f, juce::String& error)
     return true;
 }
 
+// ------------------------------------------------------------------ state
+
 void AtelierProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty ("pluginVersion", JucePlugin_VersionString, nullptr);
+    state.removeChild (state.getChildWithName ("BRIDGE"), nullptr);
+    state.appendChild (bridgeToTree(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -522,17 +557,15 @@ void AtelierProcessor::setStateInformation (const void* data, int sizeInBytes)
     auto xml = getXmlFromBinary (data, sizeInBytes);
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
         return;
+    auto tree = juce::ValueTree::fromXml (*xml);
+    const auto b = tree.getChildWithName ("BRIDGE");
+    apvts.replaceState (tree);
+    if (b.isValid())
+        bridgeFromTree (b);
+    undoStack.clear();
+    undoPos = -1;
+    checkpoint();
 
-    apvts.replaceState (juce::ValueTree::fromXml (*xml));
-
-    // Chain order
-    std::vector<int> order;
-    for (auto& t : juce::StringArray::fromTokens (apvts.state.getProperty ("chainOrder").toString(), ",", ""))
-        if (t.isNotEmpty())
-            order.push_back (t.getIntValue());
-    processingChain.setOrder (order); // ignored if invalid
-
-    // Reference file
     const juce::File f (apvts.state.getProperty ("filePath").toString());
     if (f.existsAsFile())
     {

@@ -1,23 +1,23 @@
 # TODO
 
-## v0.1 (current)
-- [x] Core DSP: generator, oversampler, tube, EQ, chain, analysis, transfer estimator
-- [x] 37 numeric core DSP checks + 27 headless plugin-processor checks (buses, sidechain, A/B alignment, latency, state, analysis worker)
-- [x] VST3 processor: buses (main + sidechain), APVTS from ParamSpecs, state save/restore, latency reporting
-- [x] Sources: DAW input / generator / audio file
-- [x] Chain UI: reorder, enable, time-aligned A/B, trims, meters (in / out / sidechain)
-- [x] Module editor with DSP-derived graphs (tube transfer curve, EQ magnitude + phase)
-- [x] Analysis worker thread: spectrum, harmonics/THD/THD+N, transfer function + coherence + delay
-- [x] Inno Setup installer, pluginval, CI artifacts
-- [ ] First DAW test by R4N (FL Studio, Cubase): load, automation, save/reload, sidechain routing
+## v0.2 (current): rounds 1 + 2
+- [x] Bridge: node graph between Input and Output, parallel paths (summed), cycle protection, per-block mix / output gain / bypass, latency-aligned joins, lock-free graph swaps
+- [x] 17 blocks: tube, tape, transformer, console, saturation, compressor (opto / FET / VCA / vari-mu / diode), transient, EQ, filter, exciter, delay, reverb, chorus, flanger, phaser, stereo, gain
+- [x] Every block: SIMPLE and ADVANCED controls
+- [x] EQ: 24 bands, click-to-create, 8 shapes, slopes, stereo / L / R / M / S placement, dynamic bands, zero-latency / natural / linear phase, EQ Match, dB view ±30 / 24 / 12 / 6 / 3 / 1 / auto
+- [x] Saturation: 7 harmonic recipes (silky, warm, round, square, sharp, gritty, glassy) + custom harmonic designer (H2–H10)
+- [x] New UI (approved design): centred spectrum with IN / OUT / difference / freeze, readout panel (LUFS-S, true peak, correlation, THD, gain reduction), inspector, full-size EQ and saturation editors
+- [x] A/B with loudness matching; undo / redo
+- [x] Blueprint export: JSON + schema, PDF, PNG plots, CSV, WAV renders, implementation and validation docs, revisioned folders
+- [x] Tests: 37 core DSP + 54 block + 41 plugin checks, pluginval strictness 5
+- [ ] DAW test by R4N (FL Studio 25, 44.1 kHz / 512)
 
-## Known limitations (v0.1)
-- Chain modules are fixed (Tube, EQ). Add/remove comes in v0.2.
-- A/B is time-aligned but not loudness-matched yet.
-- Analysis uses the left channel only.
-- The generator replaces the DAW input while Source = Generator, even when the generator is stopped (silence).
-- At 44.1 kHz the oversampler's anti-alias filter starts rolling off around 18 kHz (inside the tube stage only).
-- DAW routing steps are written from each DAW's standard workflow and are not yet confirmed with ATELIER.
+## Known limitations (v0.2)
+- Block parameters are not host-automatable yet (only the global ones: trims, A/B, bypass). The bridge and all block settings are saved with the project.
+- In linear-phase mode, dynamic EQ bands act as static bands.
+- EQ Match learns the reference from Atelier's own input (or sidechain), not from a loaded file.
+- Delay, chorus, flanger and tape wow use modulation, so their renders are not sample-identical between runs; the Blueprint says so.
+- DAW routing steps for reference analysis are not yet confirmed in a DAW. An FL Studio guide with screenshots comes later.
 
 ## Backlog
-See DEVELOPMENT_PLAN.md (v0.2 onwards).
+See DEVELOPMENT_PLAN.md.

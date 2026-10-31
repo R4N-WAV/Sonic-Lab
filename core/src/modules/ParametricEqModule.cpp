@@ -341,6 +341,7 @@ void ParametricEqModule::processIir (double* L, double* R, int n, double rate)
 
 void ParametricEqModule::designLinearIr()
 {
+    std::lock_guard<std::mutex> lock (designMutex);
     const double rate = workerFs.load();
     const int N = kLinearLens[(int) getParam (gLinQ)];
     bool anyMs = false;
@@ -395,6 +396,17 @@ void ParametricEqModule::designLinearIr()
 
     if (conv[0].loadIr (ir[0]) && conv[1].loadIr (ir[1]))
         linearMs = anyMs ? 1 : 0;
+}
+
+void ParametricEqModule::prepareOffline()
+{
+    if ((Phase) (int) getParam (gPhase) != Phase::linear)
+        return;
+    designedVersion = paramVersion();
+    designLinearIr();
+    // let the convolvers pick up the new IR at their next block boundary
+    for (auto& c : conv)
+        c.reset();
 }
 
 void ParametricEqModule::workerLoop()

@@ -1,4 +1,4 @@
-ATELIER by R4N - installed
+Atelier - installed
 
 MAKE ATELIER APPEAR IN YOUR DAW
 -------------------------------
@@ -6,37 +6,35 @@ FL Studio
   1. Options > Manage plugins.
   2. Make sure "C:\Program Files\Common Files\VST3" is in the search paths.
   3. Click "Find installed plugins" (or "Find more plugins").
-  4. ATELIER appears under Effects (vendor: R4N). Star it to add it to the browser.
+  4. Atelier appears under Effects (vendor: R4N). Star it to add it to the browser.
 
 Cubase
   1. Restart Cubase - it rescans the standard VST3 folder at startup.
   2. If missing: Studio > VST Plug-in Manager > Rescan All.
-  3. ATELIER appears under R4N in the effect inserts.
 
 Reaper
   1. Options > Preferences > Plug-ins > VST.
   2. Check the VST3 path includes "C:\Program Files\Common Files\VST3".
-  3. Click "Re-scan" (or "Clear cache/re-scan").
+  3. Click "Re-scan".
 
-USING ATELIER
--------------
-- Insert ATELIER on a mixer/insert slot. By default it processes the
-  track's audio (Source: DAW Input).
-- Source: Generator plays test signals (sine, sweeps, noise...) through
-  the chain; the harmonics panel then measures exactly.
-- To analyse ANOTHER plugin: put that plugin before ATELIER and send the
-  unprocessed signal to ATELIER's sidechain. Then choose
-  "Reference plugin: sidechain -> main input" in the Analysis panel.
-  See DAW_ROUTING.md in C:\Program Files\R4N\ATELIER for step-by-step
-  routing in FL Studio, Cubase and Reaper.
+USING ATELIER (QUICK START)
+---------------------------
+- Insert Atelier on a mixer insert. It processes the track's audio.
+- The Bridge (bottom) shows Input -> Output. Click a block in the
+  palette to add it to the chain, or drag it onto a wire.
+- Drag from a block's right port to another block's left port to make
+  a parallel path. Parallel paths are summed.
+- Click a block to see its controls on the right (SIMPLE / ADVANCED).
+  Double-click EQ or Saturation for the large editor.
+- A/B in the header compares with the unprocessed signal at matched
+  loudness.
+- EXPORT writes a Blueprint package to Documents\Atelier_Export.
 
 TROUBLESHOOTING
 ---------------
-- ATELIER does not show up: rescan plugins (see above). Check that
-  C:\Program Files\Common Files\VST3\ATELIER.vst3 exists.
-- Your DAW is 32-bit: ATELIER is 64-bit (x64) only.
+- Atelier does not show up: rescan plugins (see above). Check that
+  C:\Program Files\Common Files\VST3\Atelier.vst3 exists.
+- Your DAW is 32-bit: Atelier is 64-bit (x64) only.
 - Installed to a custom folder: add that folder to your DAW's VST3
   search paths.
-- "Sidechain: not connected" in the header: the DAW has not enabled
-  ATELIER's sidechain bus. Follow DAW_ROUTING.md.
-- Uninstall: Windows Settings > Apps > ATELIER by R4N > Uninstall.
+- Uninstall: Windows Settings > Apps > Atelier > Uninstall.

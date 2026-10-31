@@ -1,27 +1,34 @@
-# ATELIER by R4N: Architecture
+# Atelier: Architecture
 
 ## Overview
 
-ATELIER is a **Windows x64 VST3 audio effect**, built with JUCE 8. The DAW owns the audio devices, drivers, sample rate and buffers. ATELIER owns:
+Atelier is a **Windows x64 VST3 audio effect**, built with JUCE 8. The DAW owns the audio devices, drivers, sample rate and buffers. Atelier owns:
 
 - the DSP engine
 - signal generation
 - reference audio
 - analysis
-- (later) blueprint export
+- the Bridge (node graph of blocks)
+- blueprint export
 
 ```
 repo/
 ├── core/          sonic_core: JUCE-free C++17 DSP library (the "truth")
-│   ├── Module / Chain           parameter specs, lock-free chain ordering
+│   ├── Module                   parameter specs (id, unit, range, skew, description, simple/advanced group)
+│   ├── Graph                    Bridge DAG: nodes, edges, cycle check, latency-aligned fan-in sums, per-node mix
+│   ├── ModuleRegistry           block catalogue (type id → factory)
+│   ├── Convolver                partitioned convolution (linear-phase EQ)
 │   ├── SignalGenerator          band-limited test signals
 │   ├── Oversampler              linear-phase polyphase FIR, 1/2/4/8x, constant 64-sample latency
 │   ├── Biquad                   RBJ filters, 64-bit, response = audio coefficients
 │   ├── Analysis                 FFT, windows, calibrated spectrum, harmonics/THD/THD+N
 │   ├── TransferAnalyzer         Welch H1 transfer function, coherence, PHAT delay estimate
-│   └── modules/                 TubeModule, EqModule
-├── tests/         CoreTests.cpp: measurable DSP assertions (run in CI on every build)
-├── plugin/        JUCE VST3: processor, editor, analysis worker, UI panels
+│   └── modules/                 Tube, Saturation, Compressor (5 models), ParametricEq,
+│                                Character (tape, transformer, console), Effects (delay, reverb, chorus,
+│                                flanger, phaser, exciter, transient, stereo, filter, gain)
+├── tests/         CoreTests / ModuleTests / PluginSmokeTest: measurable assertions (run in CI)
+├── plugin/        JUCE VST3: processor, editor, analysis worker, Bridge UI, block editors,
+│                  offline measurement (Measure) and Blueprint export
 ├── installer/     Inno Setup script + texts
 └── docs/          DAW routing guide
 ```
@@ -29,14 +36,14 @@ repo/
 ## Key design rules
 
 1. **One source of truth for parameters.** Each core module declares `ParamSpec`s (id, unit, range, default, skew, description). From these, the plugin generates:
-   - its host-automatable parameters (`<module>.<param>`, e.g. `tube.drive_db`)
-   - its UI controls
+   - its UI controls (SIMPLE = specs flagged `simple`, ADVANCED = all, grouped by `group`)
+   - the Blueprint parameter tables
 
-   The blueprint exporter will read the same specs, so names, units and ranges cannot drift.
+   Names, units and ranges therefore cannot drift between sound, UI and documentation.
 
 2. **Graphs come from the DSP code.**
-   - The EQ curve uses the exact biquad coefficients the audio uses (`EqModule::design`).
-   - The tube curve uses `TubeModule::staticCurve`.
+   - The EQ curve uses the exact coefficients the audio uses (`ParametricEqModule::responseDb`).
+   - Saturation and compressor curves use `staticCurve` / `staticCurveDb` from the modules.
    - Tests check that measured responses equal the displayed ones.
 
 3. **Real-time safety.** The audio thread:
@@ -59,9 +66,9 @@ repo/
 ## Signal path (plugin)
 
 ```
-source: DAW input | generator | file  ->  input trim  ->  chain (Tube, EQ; reorderable, per-stage enable)
+source: DAW input | generator | file  ->  input trim  ->  Bridge (Input -> blocks -> Output)
         -> output trim -> DAW
-A/B bypass = dry signal delayed by the chain latency (time-aligned comparison)
+B = dry signal delayed by the bridge latency, loudness-matched to A (1.5 s power tracking)
 ```
 
 ### Buses
@@ -71,15 +78,33 @@ A/B bypass = dry signal delayed by the chain latency (time-aligned comparison)
 
 The sidechain state is shown as not connected, silent or active.
 
+## The Bridge
+
+- A directed acyclic graph between Input (id 0) and Output (id 1). `connect` rejects cycles and duplicates.
+- Several wires into one block are summed. Shorter paths are delayed so every join is sample-aligned.
+- Each node: module, mix (dry is time-aligned to wet), output gain, enable.
+- Edits build a new compiled plan on the message thread; the audio thread picks it up with one atomic swap. Old plans are freed later on the message thread (never on the audio thread).
+- The graph is stored in the plugin state as a `BRIDGE` tree; undo / redo uses snapshots of that tree.
+- Block parameters live in core atomics (not APVTS) for now, so they are not host-automatable yet.
+
+## Blueprint export
+
+`Blueprint::exportPackage` renders the bridge offline at the chosen rate (deterministic, separate instances) and writes `Documents/Atelier_Export/<Name>[_revNN]/`:
+
+- `blueprint.json` (schema `atelier.blueprint/1.0`, `schema.json` alongside): graph, every parameter with unit / range / description, measurements, validation targets
+- `blueprint.pdf`, `README.md`, `implementation/` (DSP requirements, validation tests)
+- `plots/*.png`, `data/*.csv`: frequency response, THD vs level and frequency, step response, impulse response, stereo, noise, IMD
+- `audio/*.wav`: reference input and processed renders
+
 ## Reference-plugin analysis (no internal VST3 host)
 
-`source → [reference plugin] → ATELIER main input`, with the unprocessed source sent to the ATELIER sidechain.
+`source → [reference plugin] → Atelier main input`, with the unprocessed source sent to the Atelier sidechain.
 
 In Reference mode:
 - x = sidechain
-- y = main input, taken *before* ATELIER's chain
+- y = main input, taken *before* Atelier's chain
 
-If the sidechain is not connected, ATELIER only analyses the processed signal and says so. See `docs/DAW_ROUTING.md`.
+If the sidechain is not connected, Atelier only analyses the processed signal and says so. See `docs/DAW_ROUTING.md`.
 
 **Decision:** no internal plugin hosting. DAW routing covers the need without crash-isolation and licensing risk. This will be revisited only if a needed feature cannot be done through routing, e.g. fully automated multi-level sweeps of a reference plugin.
 
@@ -92,15 +117,15 @@ If the sidechain is not connected, ATELIER only analyses the processed signal an
 | Inno Setup 6 | CI build tool only | free | Windows installer |
 | pluginval | CI validation only | GPLv3 | Automated VST3 host tests |
 
-This private project uses JUCE under AGPLv3. If ATELIER is ever distributed commercially or closed-source, a JUCE commercial licence is needed.
+This private project uses JUCE under AGPLv3. If Atelier is ever distributed commercially or closed-source, a JUCE commercial licence is needed.
 
 ## Build and CI
 
 GitHub Actions on `windows-2022`:
 
 1. Configure (VS 2022, x64).
-2. Build `Atelier_VST3` and `sonic_core_tests`.
-3. Run the DSP tests.
+2. Download the UI fonts (SIL OFL) into `plugin/Fonts/`.
+3. Build `Atelier_VST3` and the three test programs, and run the tests.
 4. Run **pluginval** at strictness 5.
 5. Build the Inno Setup installer.
 6. Upload the installer, portable ZIP and logs as artifacts.

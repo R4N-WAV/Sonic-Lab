@@ -39,7 +39,7 @@ namespace
     }
 }
 
-AnalysisWorker::AnalysisWorker (AtelierProcessor& p) : juce::Thread ("ATELIER analysis"), proc (p)
+AnalysisWorker::AnalysisWorker (AtelierProcessor& p) : juce::Thread ("Atelier analysis"), proc (p)
 {
     startThread (juce::Thread::Priority::low);
 }
@@ -81,13 +81,14 @@ void AnalysisWorker::analyse()
     const auto m = (Mode) mode.load();
 
     const size_t end = proc.scope.totalWritten();
-    const int need = juce::jmax (nfft, kTransferSegment * 2);
+    const int lufsLen = (int) (3.0 * fs);
+    const int need = std::max ({ nfft, kTransferSegment * 2, lufsLen });
     if (! proc.scope.read (end, need, frames))
         return;
 
     // x = "device input", y = "device output" for the chosen mode
     const auto& x = m == Mode::chain ? frames[SC::scopePre] : frames[SC::scopeSidechain];
-    const auto& y = m == Mode::chain ? frames[SC::scopePost] : frames[SC::scopePre];
+    const auto& y = m == Mode::chain ? frames[SC::scopePostL] : frames[SC::scopePre];
 
     Results r;
     r.sampleRate = fs;
@@ -128,6 +129,55 @@ void AnalysisWorker::analyse()
     r.xHasSignal = rmsDb (xTail) > kSilenceDb;
     r.yHasSignal = r.rmsYdB > kSilenceDb;
 
+    // ---- output loudness, true peak, correlation ----
+    {
+        const auto& oL = frames[SC::scopePostL];
+        const auto& oR = frames[SC::scopePostR];
+        sonic::Biquad k1[2], k2[2];
+        for (int c = 0; c < 2; ++c)
+        {
+            k1[c].setCoeffs (sonic::BiquadCoeffs::highShelfQ (fs, 1681.974, 0.7072, 3.99984));
+            k2[c].setCoeffs (sonic::BiquadCoeffs::highPass (fs, 38.1355, 0.5003));
+        }
+        double sum = 0.0;
+        const size_t s0 = oL.size() - (size_t) lufsLen;
+        for (size_t i = s0; i < oL.size(); ++i)
+        {
+            const double a = k2[0].process (k1[0].process (oL[i]));
+            const double b = k2[1].process (k1[1].process (oR[i]));
+            sum += a * a + b * b;
+        }
+        const double ms = sum / lufsLen;
+        r.lufsShort = ms > 1e-20 ? -0.691 + 10.0 * std::log10 (ms) : -200.0;
+
+        const int tpN = 8192;
+        if (tpRate != fs)
+        {
+            tpOs.prepare (tpN);
+            tpOs.setFactor (4);
+            tpRate = fs;
+        }
+        double tp = 0.0;
+        for (const auto* ch : { &oL, &oR })
+        {
+            tpOs.reset();
+            double* u = tpOs.upsample (ch->data() + ch->size() - tpN, tpN);
+            for (int i = 0; i < tpN * 4; ++i)
+                tp = std::max (tp, std::abs (u[i]));
+        }
+        r.truePeakDb = sonic::gainToDb (tp, -200.0);
+
+        double sxy = 0.0, sxx = 0.0, syy = 0.0;
+        for (size_t i = oL.size() - (size_t) tpN; i < oL.size(); ++i)
+        {
+            sxy += (double) oL[i] * oR[i];
+            sxx += (double) oL[i] * oL[i];
+            syy += (double) oR[i] * oR[i];
+        }
+        r.stereoValid = sxx > 1e-12 && syy > 1e-12;
+        r.correlation = r.stereoValid ? sxy / std::sqrt (sxx * syy) : 0.0;
+    }
+
     // ---- harmonics of y ----
     if (! r.yHasSignal)
     {
@@ -167,7 +217,7 @@ void AnalysisWorker::analyse()
     if (m == Mode::reference && proc.sidechainState() == AtelierProcessor::SidechainState::notConnected)
         r.transferNote = "Sidechain not connected: only the processed signal is available, so no input/output comparison is possible.";
     else if (! r.xHasSignal)
-        r.transferNote = m == Mode::reference ? "Sidechain is silent: route the unprocessed signal to ATELIER's sidechain input."
+        r.transferNote = m == Mode::reference ? "Sidechain is silent: route the unprocessed signal to Atelier's sidechain input."
                                               : "No signal entering the chain.";
     else
     {

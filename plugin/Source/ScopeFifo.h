@@ -12,7 +12,7 @@ template <int NumChannels>
 class ScopeFifo
 {
 public:
-    explicit ScopeFifo (int sizePow2 = 1 << 18) : mask ((size_t) sizePow2 - 1)
+    explicit ScopeFifo (int sizePow2 = 1 << 19) : mask ((size_t) sizePow2 - 1)
     {
         for (auto& b : buffers)
             b.assign ((size_t) sizePow2, 0.0f);
@@ -35,8 +35,7 @@ public:
     size_t totalWritten() const noexcept { return writeIndex.load (std::memory_order_acquire); }
     int capacity() const noexcept { return (int) mask + 1; }
 
-    // Copies frames [endIndex - n, endIndex) of every channel. endIndex is a
-    // value previously returned by totalWritten(). Returns false if unavailable.
+    // Copies frames [endIndex - n, endIndex) of every channel.
     bool read (size_t endIndex, int n, std::array<std::vector<float>, NumChannels>& dest) const
     {
         if (endIndex < (size_t) n || n > capacity() / 2)

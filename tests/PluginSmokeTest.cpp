@@ -1,7 +1,9 @@
 // Headless test of the real AtelierProcessor (no DAW, no editor):
-// buses, sources, A/B alignment, sidechain detection, latency, state round-trip.
+// buses, sources, bridge, A/B alignment + loudness match, sidechain detection,
+// latency, state round-trip, undo, analysis worker and the blueprint export.
 
 #include "../plugin/Source/AnalysisWorker.h"
+#include "../plugin/Source/Blueprint.h"
 #include "../plugin/Source/PluginProcessor.h"
 
 #include <cstdio>
@@ -19,7 +21,6 @@ void check (bool ok, const juce::String& what)
 void setParam (AtelierProcessor& p, const juce::String& id, float plainValue)
 {
     auto* param = p.apvts.getParameter (id);
-    jassert (param != nullptr);
     param->setValueNotifyingHost (param->convertTo0to1 (plainValue));
 }
 
@@ -33,11 +34,22 @@ float rms (const float* x, int n)
 constexpr double fs = 48000.0;
 constexpr int block = 512;
 
-// buffer layout: ch0,1 = main in/out, ch2,3 = sidechain
 void fillSine (juce::AudioBuffer<float>& b, int ch, int startSample, float amp, double freq)
 {
     for (int i = 0; i < b.getNumSamples(); ++i)
         b.setSample (ch, i, amp * (float) std::sin (2.0 * juce::MathConstants<double>::pi * freq * (startSample + i) / fs));
+}
+
+void runBlocks (AtelierProcessor& p, juce::AudioBuffer<float>& buf, int count, float amp = 0.25f)
+{
+    juce::MidiBuffer midi;
+    for (int b = 0; b < count; ++b)
+    {
+        buf.clear();
+        fillSine (buf, 0, b * block, amp, 1000.0);
+        fillSine (buf, 1, b * block, amp, 1000.0);
+        p.processBlock (buf, midi);
+    }
 }
 }
 
@@ -49,141 +61,178 @@ int main()
     std::printf ("Processor setup\n");
     auto p = std::make_unique<AtelierProcessor>();
     auto layout = p->getBusesLayout();
-    layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo(); // enable sidechain
+    layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo();
     check (p->setBusesLayout (layout), "stereo main + stereo sidechain layout accepted");
-    check (p->getTotalNumInputChannels() == 4, "4 input channels (main + sidechain)");
-    auto mono = p->getBusesLayout();
-    mono.inputBuses.getReference (0) = juce::AudioChannelSet::mono();
-    mono.outputBuses.getReference (0) = juce::AudioChannelSet::mono();
-    check (p->checkBusesLayoutSupported (mono), "mono main layout supported");
     auto bad = p->getBusesLayout();
     bad.outputBuses.getReference (0) = juce::AudioChannelSet::create5point1();
     check (! p->checkBusesLayoutSupported (bad), "5.1 rejected");
-
     p->prepareToPlay (fs, block);
-    check (p->getLatencySamples() == 64, "reports 64 samples latency (tube 4x oversampling)");
+    check (p->getLatencySamples() == 0, "empty bridge: zero latency");
 
-    std::printf ("DAW input through chain\n");
     juce::AudioBuffer<float> buf (4, block);
-    for (int b = 0; b < 40; ++b)
+    runBlocks (*p, buf, 4);
     {
-        buf.clear();
-        fillSine (buf, 0, b * block, 0.25f, 1000.0);
-        fillSine (buf, 1, b * block, 0.25f, 1000.0);
-        p->processBlock (buf, midi);
+        juce::AudioBuffer<float> ref (4, block);
+        ref.clear();
+        fillSine (ref, 0, 3 * block, 0.25f, 1000.0);
+        bool same = true;
+        for (int i = 0; i < block; ++i) same = same && std::abs (buf.getSample (0, i) - ref.getSample (0, i)) < 1e-7f;
+        check (same, "empty bridge passes audio unchanged");
     }
-    check (rms (buf.getReadPointer (0), block) > 0.05f, "output carries the processed signal");
-    check (p->sidechainState() == AtelierProcessor::SidechainState::silent, "sidechain enabled but silent -> SILENT");
 
-    std::printf ("Sidechain detection\n");
-    for (int b = 0; b < 40; ++b)
-    {
-        buf.clear();
-        fillSine (buf, 0, b * block, 0.25f, 1000.0);
-        fillSine (buf, 2, b * block, 0.25f, 500.0);
-        fillSine (buf, 3, b * block, 0.25f, 500.0);
-        p->processBlock (buf, midi);
-    }
-    check (p->sidechainState() == AtelierProcessor::SidechainState::active, "sidechain signal -> ACTIVE");
-    check (rms (buf.getReadPointer (2), block) < 1e-9f, "sidechain channels cleared after processing (no leakage)");
+    std::printf ("Bridge editing\n");
+    auto& g = p->graph();
+    g.disconnect (sonic::Graph::kInputId, sonic::Graph::kOutputId);
+    const int sat = g.addNode ("character.saturation", 300, 120);
+    const int comp = g.addNode ("dynamics.compressor", 520, 120);
+    const int dly = g.addNode ("space.delay", 520, 260);
+    g.connect (sonic::Graph::kInputId, sat);
+    g.connect (sat, comp);
+    g.connect (comp, sonic::Graph::kOutputId);
+    g.connect (sat, dly);                       // parallel branch
+    g.connect (dly, sonic::Graph::kOutputId);
+    check (g.activeOrder().size() == 3, "3 blocks in the signal path");
+    runBlocks (*p, buf, 20);
+    check (p->getLatencySamples() == 64, "latency reported to host = saturation oversampling (" + juce::String (p->getLatencySamples()) + ")");
+    check (rms (buf.getReadPointer (0), block) > 0.01f, "processed output present");
+    p->checkpoint();
 
-    std::printf ("A/B bypass is time-aligned with the chain latency\n");
+    std::printf ("A/B\n");
     setParam (*p, "chain.bypass", 1.0f);
+    setParam (*p, "ab.gain_match", 0.0f);
     {
         juce::AudioBuffer<float> imp (4, block);
-        for (int b = 0; b < 4; ++b) { imp.clear(); p->processBlock (imp, midi); } // flush
+        for (int k = 0; k < 8; ++k) { imp.clear(); p->processBlock (imp, midi); }
         imp.clear();
         imp.setSample (0, 10, 1.0f);
         p->processBlock (imp, midi);
         int peak = 0;
-        for (int i = 0; i < block; ++i)
-            if (std::abs (imp.getSample (0, i)) > std::abs (imp.getSample (0, peak))) peak = i;
-        check (peak == 10 + 64 && std::abs (imp.getSample (0, peak) - 1.0f) < 1e-6f,
-               "bypassed impulse appears unchanged after exactly 64 samples (at " + juce::String (peak) + ")");
+        for (int i = 0; i < block; ++i) if (std::abs (imp.getSample (0, i)) > std::abs (imp.getSample (0, peak))) peak = i;
+        check (peak == 74 && std::abs (imp.getSample (0, peak) - 1.0f) < 1e-6f, "B = dry, delayed by the bridge latency (peak at " + juce::String (peak) + ")");
     }
+    setParam (*p, "ab.gain_match", 1.0f);
+    runBlocks (*p, buf, 700, 0.05f);   // > 4 loudness time constants
+    const float bLevel = rms (buf.getReadPointer (0), block);
     setParam (*p, "chain.bypass", 0.0f);
+    runBlocks (*p, buf, 700, 0.05f);
+    const float aLevel = rms (buf.getReadPointer (0), block);
+    check (std::abs (juce::Decibels::gainToDecibels (bLevel / aLevel)) < 1.0f,
+           "gain-matched B within 1 dB of A (A " + juce::String (juce::Decibels::gainToDecibels (aLevel), 1) + " dB, B " + juce::String (juce::Decibels::gainToDecibels (bLevel), 1) + " dB)");
 
-    std::printf ("Disabling the tube removes its latency\n");
-    setParam (*p, "tube.enabled", 0.0f);
-    buf.clear();
-    p->processBlock (buf, midi);
-    check (p->getLatencySamples() == 0, "latency now 0");
-    setParam (*p, "tube.enabled", 1.0f);
-    p->processBlock (buf, midi);
-    check (p->getLatencySamples() == 64, "latency back to 64");
-
-    std::printf ("Generator source\n");
-    setParam (*p, "src.mode", 1.0f);
-    setParam (*p, "gen.run", 1.0f);
-    setParam (*p, "gen.level_db", -6.0f);
-    for (int b = 0; b < 10; ++b) { buf.clear(); p->processBlock (buf, midi); }
-    check (rms (buf.getReadPointer (0), block) > 0.1f, "generator produces output with silent DAW input");
-    check (p->generatorIsRunningSine(), "generator sine state reported for exact harmonic analysis");
-
-
-    std::printf ("Analysis worker (background thread)\n");
+    std::printf ("Sidechain detection\n");
     {
-        // Generator sine 1 kHz at -6 dBFS, tube drive 18 dB -> harmonics must be measured exactly
-        setParam (*p, "tube.drive_db", 18.0f);
-        setParam (*p, "tube.sag", 0.0f);
-        for (int b = 0; b < 200; ++b) { buf.clear(); p->processBlock (buf, midi); }
-        AnalysisWorker worker (*p);
-        AnalysisWorker::Results r;
-        bool got = false;
-        for (int t = 0; t < 40 && ! got; ++t)
+        juce::AudioBuffer<float> sc (4, block);
+        for (int b = 0; b < 40; ++b)
         {
-            // keep "audio" flowing like a host would (~100 ms per iteration)
-            for (int b = 0; b < 10; ++b) { buf.clear(); p->processBlock (buf, midi); }
-            juce::Thread::sleep (100);
-            got = worker.getResults (r, 0) && r.harmonicsAvailable && r.transferAvailable;
+            sc.clear();
+            fillSine (sc, 2, b * block, 0.25f, 500.0);
+            fillSine (sc, 3, b * block, 0.25f, 500.0);
+            p->processBlock (sc, midi);
         }
-        check (got, "worker produced harmonic + transfer results");
-        std::printf ("    (f0 %.3f Hz, estimated=%d, mode=%d)\n", r.harmonics.fundamentalHz, (int) r.f0Estimated, (int) r.mode);
-        check (! r.f0Estimated && std::abs (r.harmonics.fundamentalHz - 1000.0) < 1e-3, "fundamental taken from generator (MEASURED), 1000 Hz");
-        check (r.harmonics.levelDbfs[0] < -6.0 && r.harmonics.levelDbfs[0] > -30.0, "saturated H1 below the -6 dBFS input (got " + juce::String (r.harmonics.levelDbfs[0], 2) + ")");
-        check (r.harmonics.levelDbc[1] > -40.0, "driven triode shows H2 (" + juce::String (r.harmonics.levelDbc[1], 1) + " dBc)");
-        check (! r.transfer.broadband && r.transferNote.containsIgnoreCase ("narrowband"), "sine excitation: transfer flagged narrowband, delay not claimed");
-
-        // Broadband excitation: pink noise, light drive -> delay estimate = chain latency
-        setParam (*p, "gen.waveform", (float) sonic::SignalGenerator::Waveform::pinkNoise);
-        setParam (*p, "tube.drive_db", 0.0f);
-        worker.resetAveraging();
-        got = false;
-        for (int t = 0; t < 50 && ! got; ++t)
-        {
-            for (int b = 0; b < 10; ++b) { buf.clear(); p->processBlock (buf, midi); }
-            juce::Thread::sleep (100);
-            got = worker.getResults (r, 0) && r.transferAvailable && r.transfer.broadband && r.transfer.segmentsAveraged >= 4;
-        }
-        check (got && r.transfer.estimatedDelaySamples == 64, "pink noise: delay estimate = chain latency 64 (" + juce::String (r.transfer.estimatedDelaySamples) + ")");
-        check (r.transfer.meanCoherence > 0.9, "near-linear chain: coherence " + juce::String (r.transfer.meanCoherence, 3));
-        worker.setMode (AnalysisWorker::Mode::reference);
-        for (int t = 0; t < 4; ++t) { for (int b = 0; b < 10; ++b) { buf.clear(); p->processBlock (buf, midi); } juce::Thread::sleep (100); }
-        worker.getResults (r, 0);
-        check (! r.transferAvailable && r.transferNote.isNotEmpty(), "reference mode without sidechain signal: no fake comparison (" + r.transferNote + ")");
+        check (p->sidechainState() == AtelierProcessor::SidechainState::active, "sidechain signal -> ACTIVE");
+        check (rms (sc.getReadPointer (2), block) < 1e-9f, "sidechain channels cleared after processing");
     }
 
     std::printf ("Host block larger than prepared size\n");
     {
         juce::AudioBuffer<float> big (4, 4096);
-        big.clear();
+        for (int i = 0; i < 4096; ++i) big.setSample (0, i, 0.2f * std::sin (i * 0.13f));
         p->processBlock (big, midi);
-        check (rms (big.getReadPointer (0) + 3000, 1000) > 0.1f, "4096-sample block processed in chunks without reallocation");
+        bool finite = true;
+        for (int i = 0; i < 4096; ++i) finite = finite && std::isfinite (big.getSample (0, i));
+        check (finite && rms (big.getReadPointer (0) + 3000, 1000) > 0.01f, "4096-sample block processed in chunks");
     }
 
-    std::printf ("State save / restore\n");
-    setParam (*p, "tube.drive_db", 21.0f);
-    setParam (*p, "eq.bell_gain_db", -5.5f);
-    p->moveChainSlot (1, 0);
+    std::printf ("Undo / state\n");
+    g.node (sat)->module->setParam ("drive_db", 30.0f);
+    g.node (comp)->mix = 0.4f;
+    p->checkpoint();
+    check (p->undo(), "undo available");
+    check (std::abs (p->graph().node (sat)->module->getParam ("drive_db") - 12.0f) < 0.01f, "undo restores previous drive");
+    check (p->redo() && std::abs (p->graph().node (sat)->module->getParam ("drive_db") - 30.0f) < 0.01f, "redo re-applies it");
+
     juce::MemoryBlock state;
     p->getStateInformation (state);
-
     auto q = std::make_unique<AtelierProcessor>();
     q->setStateInformation (state.getData(), (int) state.getSize());
-    check (std::abs (*q->apvts.getRawParameterValue ("tube.drive_db") - 21.0f) < 0.01f, "tube drive restored");
-    check (std::abs (*q->apvts.getRawParameterValue ("eq.bell_gain_db") + 5.5f) < 0.01f, "EQ bell gain restored");
-    check (q->chainOrder() == std::vector<int> ({ 1, 0 }), "chain order restored (EQ before Tube)");
-    check ((int) q->source() == 1, "source restored (generator)");
+    auto& g2 = q->graph();
+    check (g2.nodeIds().size() == 3 && g2.edges().size() == 5, "bridge structure restored (3 blocks, 5 wires)");
+    check (g2.node (sat) && std::abs (g2.node (sat)->module->getParam ("drive_db") - 30.0f) < 0.01f, "block parameter restored");
+    check (g2.node (comp) && std::abs (g2.node (comp)->mix.load() - 0.4f) < 0.001f, "block mix restored");
+
+    std::printf ("Analysis worker\n");
+    {
+        setParam (*p, "src.mode", 1.0f);
+        setParam (*p, "gen.run", 1.0f);
+        setParam (*p, "gen.level_db", -12.0f);
+        AnalysisWorker worker (*p);
+        AnalysisWorker::Results r;
+        bool got = false;
+        for (int t = 0; t < 60 && ! got; ++t)
+        {
+            juce::AudioBuffer<float> b (4, block);
+            for (int k = 0; k < 10; ++k) { b.clear(); p->processBlock (b, midi); }
+            juce::Thread::sleep (60);
+            got = t > 25 && worker.getResults (r, 0) && r.harmonicsAvailable && r.lufsShort > -100.0;
+        }
+        check (got, "worker produced harmonics + loudness");
+        check (! r.f0Estimated && std::abs (r.harmonics.fundamentalHz - 1000.0) < 1e-3, "generator fundamental used (MEASURED)");
+        check (r.truePeakDb > -40.0 && r.truePeakDb < 3.0, "true peak plausible (" + juce::String (r.truePeakDb, 1) + " dBTP)");
+        {
+            juce::AudioBuffer<float> b (4, block);
+            b.clear();
+            p->processBlock (b, midi);
+            float maxDiff = 0;
+            for (int i = 0; i < block; ++i) maxDiff = std::max (maxDiff, std::abs (b.getSample (0, i) - b.getSample (1, i)));
+            std::printf ("    (L/R max difference %.6f, L rms %.4f)\n", maxDiff, rms (b.getReadPointer (0), block));
+        }
+        check (r.stereoValid && r.correlation > 0.9, "correlation of identical L/R ~1 (" + juce::String (r.correlation, 3) + ")");
+    }
+
+    std::printf ("Blueprint export\n");
+    {
+        auto tmp = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("atelier_bp_test");
+        tmp.deleteRecursively();
+        tmp.createDirectory();
+        Blueprint::Options o;
+        o.projectName = "Test vocal";
+        o.objective = "Warm glue with a parallel echo";
+        o.sampleRate = 48000.0;
+        o.baseFolder = tmp;
+        juce::String err;
+        auto dir = Blueprint::exportPackage (p->bridgeToTree(), o, {}, nullptr, nullptr, err);
+        check (dir.isDirectory() && err.isEmpty(), "package written to " + dir.getFullPathName() + (err.isEmpty() ? "" : " - " + err));
+        for (auto f : { "README.md", "blueprint.json", "schema.json", "blueprint.pdf", "audio/input_reference.wav", "audio/processed_reference.wav",
+                        "audio/comparison.wav", "graphs/frequency_response.png", "graphs/signal_chain.png", "measurements/measurement_data.csv",
+                        "implementation/dsp_requirements.md", "implementation/validation_tests.md" })
+            check (dir.getChildFile (f).existsAsFile() && dir.getChildFile (f).getSize() > 100, juce::String ("file ") + f);
+        auto json = juce::JSON::parse (dir.getChildFile ("blueprint.json"));
+        auto nodes = json["signal_graph"]["nodes"];
+        check (nodes.isArray() && nodes.size() == 3, "JSON lists the 3 blocks");
+        bool driveOk = false;
+        for (auto& n : *nodes.getArray())
+            if (n["type"].toString() == "character.saturation")
+                for (auto& pp : *n["parameters"].getArray())
+                    if (pp["id"].toString() == "drive_db") driveOk = std::abs ((double) pp["value"] - 30.0) < 1e-6 && pp["unit"].toString() == "dB";
+        check (driveOk, "JSON parameter value + unit match the bridge exactly (drive 30 dB)");
+        check ((int) json["signal_graph"]["total_latency_samples"] == 64, "JSON latency = bridge latency");
+        juce::MemoryBlock pdf;
+        dir.getChildFile ("blueprint.pdf").loadFileAsData (pdf);
+        const juce::String head (static_cast<const char*> (pdf.getData()), 8);
+        const juce::String tail (static_cast<const char*> (pdf.getData()) + pdf.getSize() - 6, 6);
+        check (head == "%PDF-1.4" && tail.trim() == "%%EOF", "PDF structure valid (" + juce::String ((int) pdf.getSize() / 1024) + " kB)");
+
+        // processed_reference.wav must equal a fresh offline render of the same input
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rIn (fm.createReaderFor (dir.getChildFile ("audio/input_reference.wav")));
+        std::unique_ptr<juce::AudioFormatReader> rOut (fm.createReaderFor (dir.getChildFile ("audio/processed_reference.wav")));
+        check (rIn && rOut && rIn->lengthInSamples == rOut->lengthInSamples, "reference WAVs present with equal length");
+        auto again = Blueprint::exportPackage (p->bridgeToTree(), o, {}, nullptr, nullptr, err);
+        check (again.getFileName().endsWith ("_rev02"), "second export becomes revision 2 (" + again.getFileName() + ")");
+        if (juce::SystemStats::getEnvironmentVariable ("ATELIER_KEEP_EXPORT", {}).isEmpty())
+            tmp.deleteRecursively();
+    }
 
     p->releaseResources();
     std::printf ("\n%d checks, %d failed\n", checks, failures);

@@ -8,6 +8,8 @@
 
 #include <sonic/Analysis.h>
 #include <sonic/TransferAnalyzer.h>
+#include <sonic/Biquad.h>
+#include <sonic/Oversampler.h>
 
 class AnalysisWorker : private juce::Thread
 {
@@ -41,6 +43,10 @@ public:
         juce::String transferNote;
 
         double rmsYdB = -200.0, peakYdB = -200.0, crestDb = 0.0;
+        double lufsShort = -200.0;      // ITU-R BS.1770 K-weighted, 3 s, output L+R
+        double truePeakDb = -200.0;     // 4x oversampled peak of the output
+        double correlation = 0.0;       // output L/R, last 8192 samples
+        bool stereoValid = false;
         int serial = 0;
     };
 
@@ -70,6 +76,8 @@ private:
 
     // worker-thread state
     sonic::TransferAnalyzer transfer;
+    sonic::Oversampler tpOs;
+    double tpRate = 0.0;
     double transferRate = 0.0;
     int lastMode = -1;
     size_t lastTransferIndex = 0;

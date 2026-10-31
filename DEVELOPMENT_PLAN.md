@@ -1,28 +1,26 @@
-# ATELIER by R4N: Development plan
+# Atelier: Development plan
 
 Work proceeds in small rounds. Each round ends with a CI build you can install and test in a DAW.
 
 ## History
 
-- **v0.0** (SONIC LAB, standalone): DSP core started. It was carried over unchanged, and the device/ASIO layer was dropped when the project moved to VST3.
-- **v0.1 — this round.** VST3 foundation:
-  - stereo + sidechain buses, all parameters automatable, state saved with the DAW project, latency reporting
-  - sources: DAW input, generator, audio file
-  - chain: Tube → EQ (reorder, enable, time-aligned A/B)
-  - live spectrum, harmonics/THD/THD+N, and a black-box transfer function with coherence and delay estimate (chain mode and reference-plugin mode)
-  - installer `.exe`, pluginval in CI
+- **v0.0** (SONIC LAB, standalone): DSP core started.
+- **v0.1** VST3 foundation: buses + sidechain, state, latency, generator / file sources, Tube → EQ chain, spectrum / harmonics / transfer function, installer, pluginval.
+- **v0.2 (this round): rounds 1 + 2 of the feedback.**
+  - Bridge node graph with parallel paths and per-block mix
+  - 17 blocks incl. 5 compressor topologies, harmonic-recipe saturation, tape / transformer / console, FX
+  - Pro-Q-style EQ (24 bands, dynamic, M/S, linear phase, EQ Match, selectable dB range)
+  - New dark UI, loudness-matched A/B, undo / redo
+  - Blueprint export package for Claude
 
 ## Next rounds
 
 | Round | Content |
 |---|---|
-| v0.2 | Feedback fixes from DAW testing. Dynamic add/remove of chain modules. Gain-matched A/B. Per-stage metering. Group delay and impulse response views. Region select and loop for files. |
-| v0.3 | **Compressor Lab**: opto, FET, VCA, vari-mu, diode bridge as distinct detector/gain-element models; gain-reduction history; static curve measurement. |
-| v0.4 | **Analog Lab II**: tape (hysteresis, head bump, wow/flutter, noise), transformer (core saturation, LF behaviour), console/summing. |
-| v0.5 | **Automated measurement suite**: stepped-level sine sweeps (THD vs level and vs frequency), compression curve and attack/release measurement, IMD, aliasing, latency. Also with a reference plugin via sidechain routing. |
-| v0.6 | **Blueprint Studio**: JSON (versioned schema), PNG graphs, CSV, WAV renders, Markdown implementation and validation files, PDF. One-click `ATELIER_EXPORT/` package. |
-| v0.7 | **Stereo Lab + Effects Lab** (M/S, width, crosstalk, vectorscope; reverb, delay, modulation, exciter, transient shaper). |
-| v0.8 | **Validation workflow**: load a Claude-built plugin as the "reference" and score it against a saved blueprint. |
+| v0.3 | Fixes from R4N's DAW test. Fine-tuning of block sound. Host automation for block parameters. Presets. |
+| v0.4 | Blueprint depth: per-block measurements at several settings, aliasing and latency reports, richer PDF. |
+| v0.5 | FL Studio reference-analysis guide with screenshots; reference-plugin measurement sweeps through sidechain routing. |
+| v0.6 | Validation workflow: load a Claude-built plugin as the reference and score it against a saved blueprint. |
 | v1.0 | Hardening, performance, full DAW validation, documentation. |
 
 ## Testing policy

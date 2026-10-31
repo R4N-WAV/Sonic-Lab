@@ -10,7 +10,7 @@ FetchContent_Declare(JUCE
 FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(Atelier
-    PRODUCT_NAME "ATELIER"
+    PRODUCT_NAME "Atelier"
     COMPANY_NAME "R4N"
     COMPANY_WEBSITE ""
     BUNDLE_ID "com.r4n.atelier"
@@ -24,7 +24,7 @@ juce_add_plugin(Atelier
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     VST3_CATEGORIES "Fx" "Analyzer"
     COPY_PLUGIN_AFTER_BUILD FALSE
-    DESCRIPTION "ATELIER by R4N - Understand sound. Shape character.")
+    DESCRIPTION "Atelier by R4N - Understand sound. Shape character.")
 
 juce_generate_juce_header(Atelier)
 
@@ -32,10 +32,25 @@ target_sources(Atelier PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/AnalysisWorker.cpp
-    Source/AnalysisPanel.cpp
-    Source/ChainPanel.cpp
-    Source/ModuleEditor.cpp
-    Source/SourcePanel.cpp)
+    Source/MainPanels.cpp
+    Source/Bridge.cpp
+    Source/Inspector.cpp
+    Source/BlockEditors.cpp
+    Source/Measure.cpp
+    Source/Blueprint.cpp)
+
+# Fonts (SIL Open Font License) are downloaded by CI into plugin/Fonts; without
+# them the UI falls back to system fonts.
+file(GLOB ATELIER_FONTS "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/*.ttf")
+list(LENGTH ATELIER_FONTS ATELIER_FONT_COUNT)
+if(ATELIER_FONT_COUNT EQUAL 6)
+    juce_add_binary_data(AtelierFonts SOURCES ${ATELIER_FONTS})
+    set_target_properties(AtelierFonts PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_link_libraries(Atelier PUBLIC AtelierFonts)
+    message(STATUS "Atelier: embedding ${ATELIER_FONT_COUNT} fonts")
+else()
+    message(STATUS "Atelier: fonts not found (${ATELIER_FONT_COUNT}/6) - using system fonts")
+endif()
 
 target_compile_definitions(Atelier PUBLIC
     JUCE_WEB_BROWSER=0
